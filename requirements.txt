@@ -1,0 +1,12 @@
+# Only the `connectors` package needs these. The reconstructor/ swap engines are
+# pure standard library and require nothing here.
+
+# Data
+pandas>=2.0.0
+
+# Database connectors
+pyathena>=3.0.0
+snowflake-connector-python>=3.0.0
+
+# Credential loading from .env
+python-dotenv>=1.0.0

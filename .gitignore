@@ -1,0 +1,18 @@
+# Credentials — never commit
+.env
+
+# Tableau workbooks — never stage source/output workbooks
+*.twb
+*.twbx
+*.twbr
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
