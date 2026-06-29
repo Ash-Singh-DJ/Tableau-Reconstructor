@@ -162,8 +162,7 @@ Tableau's `.twb` format.
 1. **Check `table_mappings.csv` first** — never re-ask about a known mapping. It is
    a plain CSV (columns: `athena_database, athena_table, snowflake_database,
    snowflake_schema, snowflake_table, approved_date, notes`); read and edit it
-   directly. (There is no helper API — earlier versions of this workflow referenced
-   `find_table_mapping`/`add_table_mapping` functions that **do not exist**.)
+   directly.
 2. **Detect new mappings** by comparing table names (fuzzy) and column schemas
    across Athena/Snowflake.
 3. **Get user sign-off** before using any new mapping, then add a row to
@@ -194,4 +193,3 @@ Tableau's `.twb` format.
 5. ❌ Forgetting `'e'` parameter in `REGEXP_SUBSTR` for capture groups
 6. ❌ Using Presto date format codes (`%`) instead of Snowflake (`MM/DD/YYYY`)
 7. ❌ Not adjusting array indices from 1-based to 0-based
-8. ❌ Calling a `find_table_mapping`/`add_table_mapping` helper — none exists; edit `table_mappings.csv` directly

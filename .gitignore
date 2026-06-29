@@ -5,6 +5,11 @@
 *.twb
 *.twbx
 *.twbr
+*.tdsx
+
+# Working directories — inputs and outputs are local only
+Inputs/
+Outputs/
 
 # Python
 __pycache__/

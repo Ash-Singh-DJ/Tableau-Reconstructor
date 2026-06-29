@@ -41,7 +41,7 @@ sandbox_hvc,industry_sectors,SANDBOX,B2B,hvc_table_industry_sectors,2026-04-06,C
 sandbox_hvc,holding_companies,SANDBOX,B2B,hvc_table_holding_companies,2026-04-06,CSV table from S3 - 44 rows loaded
 dimension_external_db,risk_and_compliance_accounts_current,B2B_SILVER,RISK_AND_COMPLIANCE,ACCOUNTS,2026-04-16,"R&C accounts current - username→USER_NAME, status→RC_STATUS; current-only snapshot (no history equivalent)"
 dimension_external_db,pib_product_service_attributes,B2B_SILVER,SALESFORCE,PRODUCT_SERVICE_ATTRIBUTES_CURRENT,2026-04-16,PIB product service attributes
-fact_external,omniture_event_fact,B2B_SILVER,PRODUCT_METRICS,FCT_PRODUCT_METRICS_PUBLIC_VW,2026-06-10,Modern analogue replacing omniture_event_fact; joins PIB_MEMBERSHIP_CURRENT on EID
+fact_external,omniture_event_fact,B2B_SILVER,PRODUCT_METRICS,FCT_PRODUCT_METRICS_PUBLIC_VW,2026-06-10,Modern analogue replacing omniture_event_fact; joins PIB_MEMBERSHIP_CURRENT on EID; NOT used for djfactiva suite (see ADOBE_SILVER.B2B_DAILY.DJFACTIVA)
 dimension_external_db,pib_membership_dimension,B2B_SILVER,MEMBERSHIP,PIB_MEMBERSHIP_CURRENT,2026-06-10,PIB membership dimension current; pib_member_id->EID
 reference_external_db,pib_product_dimension,B2B_SILVER,PRODUCT_DIMENSION,PRODUCT_DIMENSION,2026-06-10,PIB product dimension
 dimension_external_db,pib_contact_dimension,B2B_SILVER,SALESFORCE,CONTACT_CURRENT,2026-06-10,PIB contact dimension current; contact_sfdc_id->ID
@@ -50,3 +50,6 @@ dimension_external_db,pib_leads_dimension,B2B_SILVER,SALESFORCE,LEADS_CURRENT,20
 dimension_external_db,pib_alerts,B2B_SILVER,PIB_ALERTS,PIB_ALERTS,2026-06-10,PIB alerts; user_id->DATA_DELIVERIES_USER_ID
 fact_external_db,pib_account_hierarchy_fact,B2B_SILVER,SALESFORCE,ACCOUNT_HIERARCHY_FACT,2026-06-11,PIB account hierarchy fact; exists as a View in B2B_SILVER.SALESFORCE
 dimension_external_db,risk_and_compliance_accounts_history,B2B_SILVER,RISK_AND_COMPLIANCE,ACCOUNTS_HISTORY,2026-06-25,"R&C accounts history (DT-1 resolution); same 20-col schema as ACCOUNTS; username->USER_NAME, status->RC_STATUS; 9.8M rows across snapshots"
+dimension_external_db,cdb_source_docs_current,B2B_SILVER,CDB,CDB_SOURCE_DOCS_CURRENT,2026-06-29,CDB source docs current - user confirmed
+dimension_external_db,ip_rights_data_current,B2B_SILVER,CONTENT_LICENSING,IP_RIGHTS_CURRENT,2026-06-29,IP rights data current - user confirmed
+reference_external_db,country_reference,COMMON_SILVER,REFERENCE,COUNTRY_REFERENCE,2026-06-29,Country reference lookup - user confirmed
