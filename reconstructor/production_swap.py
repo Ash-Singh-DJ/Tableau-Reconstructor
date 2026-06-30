@@ -1,11 +1,14 @@
 """
-production_swap.py -- Snowflake -> Snowflake table repoint for Tableau .twbx.
+production_swap.py -- Snowflake -> Snowflake table repoint for Tableau .twbx/.tdsx.
 
 Unlike reconstruct.py (which migrates an Athena custom-SQL workbook to Snowflake
 and rebuilds scaffolding), this is a *narrow* operation: a workbook is ALREADY
 Snowflake-backed (e.g. pointing at a SANDBOX view), and we repoint one or more of
 its datasources at a final production table (B2B_GOLD or another prod schema),
 leaving everything else byte-for-byte intact.
+
+Works on either a workbook (.twbx) or a standalone data source (.tdsx); format
+handling is centralized in tableau_doc.py and the output keeps the input's extension.
 
 Because the source and target are both Snowflake and the column shapes are meant to
 match, NO metadata-records are rebuilt, NO extract is stripped, NO calc is touched,
@@ -57,6 +60,7 @@ Usage:
     python production_swap.py INPUT.twbx --emit-config               # print a config skeleton
     python production_swap.py INPUT.twbx --config c.json [-o OUT.twbx]
     python production_swap.py INPUT.twbx --config c.json --target-columns cols.json
+    (INPUT may be a .tdsx data source; the output keeps the input's extension.)
 """
 
 import argparse
@@ -66,15 +70,9 @@ import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
-
-# ---- .twb IO -----------------------------------------------------------------
-def read_twb(twbx_path):
-    """Return (twb_entry_name, raw_text) for the .twb inside a .twbx."""
-    with zipfile.ZipFile(twbx_path) as z:
-        names = [n for n in z.namelist() if n.endswith('.twb')]
-        if not names:
-            raise RuntimeError(f'No .twb found inside {twbx_path}')
-        return names[0], z.read(names[0]).decode('utf-8')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tableau_doc import (read_doc, split_prefix, datasource_elements, ds_label,
+                         matches as ds_matches, default_output_path)
 
 
 # ---- introspection -----------------------------------------------------------
@@ -125,18 +123,16 @@ def bound_columns(ds):
 
 def describe_workbook(twbx_path):
     """List Snowflake-backed datasources with current target + bound columns."""
-    _, raw = read_twb(twbx_path)
+    _, raw = read_doc(twbx_path)
     root = ET.fromstring(raw)
     out = []
-    dss = root.find('.//datasources')
-    if dss is None:
-        return out
-    for ds in dss.findall('datasource'):
+    for ds in datasource_elements(root):
         if _snowflake_inner(ds) is None:
             continue
         out.append({
             'name': ds.get('name'),
             'caption': ds.get('caption'),
+            'label': ds_label(ds),
             'current_table': _current_table(ds),
             'bound_columns': bound_columns(ds),
         })
@@ -148,7 +144,7 @@ def emit_config_skeleton(twbx_path):
     datasources = []
     for d in desc:
         datasources.append({
-            'match': d['caption'] or d['name'],
+            'match': d['label'],
             'target': 'TODO_DB.TODO_SCHEMA.TODO_TABLE',
             '_current_table': d['current_table'],
             '_bound_columns': [c[0] for c in d['bound_columns']],
@@ -165,11 +161,6 @@ def parse_target(target):
         raise RuntimeError(f"target must be DB.SCHEMA.TABLE, got: {target!r}")
     db, schema, table = parts
     return db, schema, table, f'[{db}].[{schema}].[{table}]'
-
-
-def _match_datasource(ds, match):
-    """A config 'match' resolves against caption first, then federated name."""
-    return ds.get('caption') == match or ds.get('name') == match
 
 
 # ---- validation --------------------------------------------------------------
@@ -270,7 +261,7 @@ def swap_datasource(ds, ds_cfg, conn_overrides, report):
 
     report.append({
         'datasource': fed_name,
-        'caption': ds.get('caption'),
+        'caption': ds_label(ds),
         'match': match,
         'old_table': old_table,
         'new_table': sf_table,
@@ -293,17 +284,16 @@ def production_swap(input_twbx, config, output_twbx, target_columns=None, verbos
     conn_overrides = config.get('connection', {}) or {}
     ds_configs = config['datasources']
 
-    twb_name, raw = read_twb(input_twbx)
-    prefix = raw[:raw.index('<workbook')]   # preserve XML decl + build comment
+    twb_name, raw = read_doc(input_twbx)
+    prefix = split_prefix(raw)   # preserve XML decl + build comment
     root = ET.fromstring(raw)
-    datasources = root.find('.//datasources')
+    all_datasources = datasource_elements(root)
 
     # resolve config matches to datasource elements
     matched = []
     for ds_cfg in ds_configs:
         match = ds_cfg.get('match') or ds_cfg.get('name')
-        hits = [ds for ds in datasources.findall('datasource')
-                if _match_datasource(ds, match)]
+        hits = [ds for ds in all_datasources if ds_matches(ds, match)]
         if not hits:
             raise RuntimeError(f"config datasource not found in workbook: {match!r}")
         if len(hits) > 1:
@@ -407,11 +397,11 @@ def write_notes(result, notes_path):
 
 # ---- CLI ---------------------------------------------------------------------
 def main(argv=None):
-    p = argparse.ArgumentParser(description='Snowflake -> Snowflake table repoint for Tableau .twbx.')
-    p.add_argument('input', help='input .twbx (already Snowflake-backed)')
+    p = argparse.ArgumentParser(description='Snowflake -> Snowflake table repoint for Tableau .twbx/.tdsx.')
+    p.add_argument('input', help='input .twbx/.tdsx (already Snowflake-backed)')
     p.add_argument('--config', help='config JSON file')
     p.add_argument('--target-columns', help='JSON of prod table columns per datasource (enables validation)')
-    p.add_argument('-o', '--output', help='output .twbx path')
+    p.add_argument('-o', '--output', help='output .twbx/.tdsx path')
     p.add_argument('--list', action='store_true', help='list Snowflake datasources + bound columns and exit')
     p.add_argument('--emit-config', action='store_true', help='print a config skeleton and exit')
     p.add_argument('--notes', help='also write a notes .md to this path')
@@ -419,7 +409,7 @@ def main(argv=None):
 
     if args.list:
         for d in describe_workbook(args.input):
-            print(f"\n[{d['caption']}]  ({d['name']})")
+            print(f"\n[{d['label']}]  ({d['name']})")
             print(f"  current table: {d['current_table']}")
             print(f"  bound columns ({len(d['bound_columns'])}): "
                   f"{', '.join(c[0] for c in d['bound_columns'])}")
@@ -443,11 +433,7 @@ def main(argv=None):
         with open(args.target_columns, 'r', encoding='utf-8') as f:
             target_columns = json.load(f)
 
-    output = args.output
-    if not output:
-        base = os.path.splitext(os.path.basename(args.input))[0]
-        output = os.path.join(os.path.dirname(os.path.abspath(args.input)),
-                              f'{base} - Production Swap.twbx')
+    output = args.output or default_output_path(args.input, 'Production Swap')
 
     result = production_swap(args.input, config, output, target_columns=target_columns)
     if args.notes:

@@ -1,17 +1,28 @@
 """
 reconstruct.py -- workbook-agnostic Path A reconstructor.
 
-Path A = convert a Tableau .twbx from Athena custom-SQL (extract-backed) to a
-Snowflake table/view by editing the bundled .twb XML *in place*, preserving ALL
+Path A = convert a Tableau .twbx/.tdsx from Athena custom-SQL (extract-backed) to a
+Snowflake table/view by editing the bundled .twb/.tds XML *in place*, preserving ALL
 scaffolding (captions, drill-down hierarchies, calculated fields, worksheet
 bindings). Contrast Path B (Tableau's Replace Data Source), which rebinds by
 internal field name and silently drops scaffolding when names mismatch.
+
+Works on either a workbook (.twbx, root <workbook> with many datasources) or a
+standalone data source (.tdsx, root <datasource>, no worksheets); format handling is
+centralized in tableau_doc.py. The output keeps the input's extension.
 
 Why it works: Tableau binds worksheet fields by internal field name (local-name),
 decoupled from the physical column via <metadata-record> (remote-name ->
 local-name). We keep the <datasource> element intact and only rewrite:
   (1) the connection block (athena -> snowflake named-connection),
-  (2) the relation (text custom-SQL -> table pointing at the gold view),
+  (2) the relation (text custom-SQL -> table pointing at the gold view). A
+      datasource that JOINS/UNIONS several Custom SQL relations is collapsed: the
+      whole join subtree (connection block + object-graph mirror) is replaced by
+      ONE table relation pointing at the single flattened gold view (built by
+      extract_custom_sql_advanced.flatten_joined_sql). A join that mixes SQL with a
+      non-SQL leaf (Google Drive/Excel sheet, published extract) is REFUSED -- the
+      standard engine won't fold mixed sources into one view; an Opus model can
+      build a bespoke swap for those rare cases.
   (3) the connection-level metadata-records so each gold column maps to the
       ORIGINAL internal field name,
 plus: neutralize materialized calc fields (strip <calculation> so they resolve to
@@ -59,6 +70,7 @@ Usage:
     python reconstruct.py INPUT.twbx --config config.json [-o OUTPUT.twbx]
     python reconstruct.py INPUT.twbx --config config.json --template TEMPLATE.twbx
     python reconstruct.py INPUT.twbx --emit-config            # print a config skeleton
+    (INPUT may be a .tdsx data source; the output keeps the input's extension.)
 
 The optional --template is a Snowflake-connected .twbx whose metadata-records are
 cloned for authentic per-local-type record shape. If omitted, the input workbook's
@@ -73,6 +85,10 @@ import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tableau_doc import (read_doc, split_prefix, datasource_elements, ds_label,
+                         matches as ds_matches, default_output_path)
+
 
 # ---- default Snowflake connection (override via config["connection"]) --------
 DEFAULT_CONNECTION = {
@@ -83,16 +99,6 @@ DEFAULT_CONNECTION = {
     'role': 'B2B_ANALYST_PRIVILEGED',
     'authentication': 'oauth',
 }
-
-
-# ---- .twb IO -----------------------------------------------------------------
-def read_twb(twbx_path):
-    """Return (twb_entry_name, raw_text) for the .twb inside a .twbx."""
-    with zipfile.ZipFile(twbx_path) as z:
-        names = [n for n in z.namelist() if n.endswith('.twb')]
-        if not names:
-            raise RuntimeError(f'No .twb found inside {twbx_path}')
-        return names[0], z.read(names[0]).decode('utf-8')
 
 
 # ---- introspection -----------------------------------------------------------
@@ -114,13 +120,10 @@ def _inner_connection_class(ds):
 
 def describe_workbook(twbx_path):
     """Return a list of per-datasource descriptors for inspection / config skeleton."""
-    _, raw = read_twb(twbx_path)
+    _, raw = read_doc(twbx_path)
     root = ET.fromstring(raw)
     out = []
-    dss = root.find('.//datasources')
-    if dss is None:
-        return out
-    for ds in dss.findall('datasource'):
+    for ds in datasource_elements(root):
         conn = ds.find('connection')
         cls = _inner_connection_class(ds)
         base_cols, calc_ids = [], []
@@ -140,6 +143,7 @@ def describe_workbook(twbx_path):
         out.append({
             'name': ds.get('name'),
             'caption': ds.get('caption'),
+            'label': ds_label(ds),
             'connection_class': cls,
             'is_custom_sql': any(r.get('type') == 'text' for r in ds.iter('relation')),
             'base_columns': base_cols,
@@ -159,7 +163,7 @@ def emit_config_skeleton(twbx_path):
         if d['connection_class'] not in SQL_CONNECTION_CLASSES:
             continue
         datasources.append({
-            'match': d['caption'],
+            'match': d['label'],
             'view': 'TODO_VIEW_NAME',
             'casing': 'upper',
             '_base_columns_detected': [c[0] for c in d['base_columns']],
@@ -222,9 +226,9 @@ def harvest_templates(input_twbx, template_twbx=None):
     records from template_twbx; backfill any missing types from the input."""
     templates = {}
     if template_twbx and os.path.exists(template_twbx):
-        _, raw = read_twb(template_twbx)
+        _, raw = read_doc(template_twbx)
         root = ET.fromstring(raw)
-        for ds in root.find('.//datasources').findall('datasource'):
+        for ds in datasource_elements(root):
             conn = ds.find('connection')
             if conn is None:
                 continue
@@ -239,7 +243,7 @@ def harvest_templates(input_twbx, template_twbx=None):
                     lt = rec.findtext('local-type', 'string')
                     templates.setdefault(lt, copy.deepcopy(rec))
     # backfill from input workbook
-    _, raw_in = read_twb(input_twbx)
+    _, raw_in = read_doc(input_twbx)
     root_in = ET.fromstring(raw_in)
     for rec in root_in.iter('metadata-record'):
         if rec.get('class') == 'column':
@@ -291,6 +295,42 @@ def make_snowflake_named_connection(named_conn, new_conn_name, conn_cfg):
     sf.set('warehouse', conn_cfg['warehouse'])
 
 
+# ---- join-tree handling ------------------------------------------------------
+# A datasource may join/union several Custom SQL relations (see
+# extract_custom_sql_advanced.flatten_joined_sql, which builds the single flattened
+# query that becomes the gold view). Here we collapse that join subtree -- in BOTH
+# the connection block and its <object-graph> mirror -- into ONE table relation
+# pointing at the flattened gold view, so the workbook reads from a single view.
+def _relation_leaves(rel):
+    """Yield the leaf relations (text/table, not join/union containers) under a
+    relation subtree."""
+    if rel is None:
+        return
+    if rel.get('type') in ('join', 'union'):
+        for child in rel:
+            if child.tag == 'relation':
+                yield from _relation_leaves(child)
+    else:
+        yield rel
+
+
+def _collapse_join_to_table(parent, conn_name, name, sf_table):
+    """If `parent` has a child join/union <relation> subtree, replace it in place
+    with a single <relation type="table"> pointing at the gold view. Returns True
+    if a collapse happened."""
+    for i, child in enumerate(list(parent)):
+        if child.tag == 'relation' and child.get('type') in ('join', 'union'):
+            new_rel = ET.Element('relation')
+            new_rel.set('connection', conn_name)
+            new_rel.set('name', name)
+            new_rel.set('table', sf_table)
+            new_rel.set('type', 'table')
+            parent.remove(child)
+            parent.insert(i, new_rel)
+            return True
+    return False
+
+
 # ---- core transform ----------------------------------------------------------
 def transform_datasource(ds, ds_cfg, conn_cfg, templates, report):
     fed_name = ds.get('name')
@@ -299,6 +339,26 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report):
     conn = ds.find('connection')
 
     bindings = derive_bindings(ds, ds_cfg)
+
+    # detect a join/union datasource and enforce the all-SQL contract. A flattened
+    # gold view is built from SQL only, so a non-SQL leaf (Google Drive/Excel sheet,
+    # published extract, ...) cannot be folded into it. The standard engine refuses
+    # rather than silently dropping those columns.
+    top_rel = conn.find('relation')
+    is_join = top_rel is not None and top_rel.get('type') in ('join', 'union')
+    if is_join:
+        non_sql = [l for l in _relation_leaves(top_rel) if l.get('type') != 'text']
+        if non_sql:
+            names = ', '.join(repr(l.get('name')) for l in non_sql)
+            raise RuntimeError(
+                f"{fed_name}: joined datasource mixes Custom SQL with non-SQL leaf "
+                f"relation(s) {names} (e.g. a Google Drive / Excel sheet or published "
+                f"extract). The standard engine does not fold mixed SQL + non-SQL "
+                f"joins into one Snowflake view -- doing so would drop those columns. "
+                f"This is rare; an Opus model can build a bespoke swap for this "
+                f"datasource (collapse the SQL leaves into the gold view, then keep "
+                f"the non-SQL leaf as a remaining federated join against it). "
+                f"Remove this datasource from the config to swap the rest.")
 
     # (1) connection swap: find the source SQL named-connection (non-snowflake)
     old_conn_name = new_conn_name = old_class = None
@@ -316,21 +376,41 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report):
     if old_conn_name is None:
         raise RuntimeError(f'{fed_name}: no source SQL named-connection found')
 
-    # (2) repoint every connection ref + convert text relations to table relations
-    relation_name = None
-    relations_converted = 0
-    for el in ds.iter():
-        if el.get('connection') == old_conn_name:
-            el.set('connection', new_conn_name)
-        if el.tag == 'relation' and el.get('type') == 'text':
-            if relation_name is None:
-                relation_name = el.get('name')
-            el.set('type', 'table')
-            el.set('table', sf_table)
-            el.text = None
-            for sub in list(el):
-                el.remove(sub)
-            relations_converted += 1
+    # (2) point the datasource at the single gold view.
+    if is_join:
+        # collapse the join subtree -> one table relation, in the connection block
+        # and the object-graph's live ("") model. The extract-context object-graph
+        # relation is left for step (5) to strip.
+        relation_name = view
+        relations_converted = len([l for l in _relation_leaves(top_rel)
+                                   if l.get('type') == 'text'])
+        _collapse_join_to_table(conn, new_conn_name, view, sf_table)
+        og = ds.find('object-graph')
+        if og is not None:
+            for props in og.iter('properties'):
+                if (props.get('context') or '') == '':
+                    _collapse_join_to_table(props, new_conn_name, view, sf_table)
+        # rename any straggler connection refs (none expected after collapse)
+        for el in ds.iter():
+            if el.get('connection') == old_conn_name:
+                el.set('connection', new_conn_name)
+    else:
+        # single-relation datasource: repoint connection refs + convert the text
+        # relation(s) to a table relation in place (preserving the relation name).
+        relation_name = None
+        relations_converted = 0
+        for el in ds.iter():
+            if el.get('connection') == old_conn_name:
+                el.set('connection', new_conn_name)
+            if el.tag == 'relation' and el.get('type') == 'text':
+                if relation_name is None:
+                    relation_name = el.get('name')
+                el.set('type', 'table')
+                el.set('table', sf_table)
+                el.text = None
+                for sub in list(el):
+                    el.remove(sub)
+                relations_converted += 1
     parent_name = f'[{relation_name}]'
 
     # (3) rebuild connection-level metadata-records
@@ -375,7 +455,7 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report):
 
     report.append({
         'datasource': fed_name,
-        'caption': ds.get('caption'),
+        'caption': ds_label(ds),
         'view': view,
         'sf_table': sf_table,
         'casing': ds_cfg.get('casing', 'upper'),
@@ -418,11 +498,6 @@ def neutralize_worksheet_calc_copies(root, fed_name, calc_ids):
     return stripped
 
 
-def _match_datasource(ds, match):
-    """A config 'match' resolves against caption first, then federated name."""
-    return ds.get('caption') == match or ds.get('name') == match
-
-
 # ---- orchestration -----------------------------------------------------------
 def reconstruct(input_twbx, config, output_twbx, template_twbx=None, verbose=True):
     conn_cfg = {**DEFAULT_CONNECTION, **config.get('connection', {})}
@@ -432,16 +507,16 @@ def reconstruct(input_twbx, config, output_twbx, template_twbx=None, verbose=Tru
     if verbose:
         print(f'Harvested metadata-record templates: {sorted(templates)}')
 
-    twb_name, raw = read_twb(input_twbx)
-    prefix = raw[:raw.index('<workbook')]   # preserve XML decl + build comment
+    twb_name, raw = read_doc(input_twbx)
+    prefix = split_prefix(raw)   # preserve XML decl + build comment
     root = ET.fromstring(raw)
-    datasources = root.find('.//datasources')
+    all_datasources = datasource_elements(root)
 
     # resolve config matches to datasource elements
     matched = []
     for ds_cfg in ds_configs:
         match = ds_cfg.get('match') or ds_cfg.get('name')
-        hits = [ds for ds in datasources.findall('datasource') if _match_datasource(ds, match)]
+        hits = [ds for ds in all_datasources if ds_matches(ds, match)]
         if not hits:
             raise RuntimeError(f"config datasource not found in workbook: {match!r}")
         if len(hits) > 1:
@@ -543,10 +618,10 @@ def write_notes(result, notes_path, drill_label=None):
 # ---- CLI ---------------------------------------------------------------------
 def main(argv=None):
     p = argparse.ArgumentParser(description='Workbook-agnostic Path A reconstructor.')
-    p.add_argument('input', help='input .twbx (Athena, extract-backed)')
+    p.add_argument('input', help='input .twbx/.tdsx (Athena, extract-backed)')
     p.add_argument('--config', help='config JSON file')
-    p.add_argument('--template', help='Snowflake-connected .twbx for metadata-record shapes')
-    p.add_argument('-o', '--output', help='output .twbx path')
+    p.add_argument('--template', help='Snowflake-connected .twbx/.tdsx for metadata-record shapes')
+    p.add_argument('-o', '--output', help='output .twbx/.tdsx path')
     p.add_argument('--emit-config', action='store_true',
                    help='print a config skeleton for the input workbook and exit')
     p.add_argument('--notes', help='also write a RECONSTRUCTION_NOTES.md to this path')
@@ -566,11 +641,7 @@ def main(argv=None):
         ds.pop('_base_columns_detected', None)
         ds.pop('_calc_fields_available', None)
 
-    output = args.output
-    if not output:
-        base = os.path.splitext(os.path.basename(args.input))[0]
-        output = os.path.join(os.path.dirname(os.path.abspath(args.input)),
-                              f'{base} - Source Swap.twbx')
+    output = args.output or default_output_path(args.input, 'Source Swap')
 
     result = reconstruct(args.input, config, output, template_twbx=args.template)
     if args.notes:

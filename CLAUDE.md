@@ -6,6 +6,13 @@ production tables. It is a distilled, standalone extraction of the dashboard-
 migration tooling built in the B2B `Presto-to-ANSI` project, packaged so any team
 member can run the same workflow without that project's wider baggage.
 
+Both skills operate on **workbooks (`.twbx`)** and **standalone data sources
+(`.tdsx`)** interchangeably — same workflow, same commands, output keeps the input's
+extension. A `.twbx` bundles a `.twb` (root `<workbook>`, many datasources,
+worksheets); a `.tdsx` bundles a `.tds` whose root *is* a single `<datasource>` (no
+worksheets, identified by `formatted-name`). The format seam is centralized in
+`reconstructor/tableau_doc.py`; everything else is shared.
+
 Two Claude **skills** drive the work end-to-end (see `.claude/skills/`):
 
 1. **`tableau-source-swap`** — Athena → Snowflake. Extract each datasource's Custom
@@ -30,13 +37,14 @@ Tableau-Reconstructor/
 │   ├── extract_custom_sql_advanced.py  # base + translatable calc fields as columns
 │   ├── extract_field_metadata.py       # captions / calc formulas / SQL-col maps → CSV
 │   ├── verify_output.py        #   static, config-driven verification of a swap
+│   ├── tableau_doc.py          #   format-agnostic .twbx/.tdsx IO shared by all engines
 │   └── deploy_view.py          #   deploy a gold view + smoke test (uses connectors)
 ├── .claude/skills/             # the two orchestration skills
 │   ├── tableau-source-swap/SKILL.md
 │   └── production-swap/SKILL.md
 ├── table_mappings.csv          # approved Athena ↔ Snowflake table mappings (shared)
-├── Inputs/                     # source .twbx/.twb workbooks
-├── Outputs/                    # per-workbook outputs (gold SQL, swapped .twbx, notes)
+├── Inputs/                     # source .twbx/.twb workbooks and .tdsx/.tds data sources
+├── Outputs/                    # per-workbook outputs (gold SQL, swapped .twbx/.tdsx, notes)
 ├── requirements.txt
 ├── .env.example                # credential template (copy to .env; never commit .env)
 └── README.md
@@ -167,6 +175,34 @@ Tableau's `.twb` format.
    across Athena/Snowflake.
 3. **Get user sign-off** before using any new mapping, then add a row to
    `table_mappings.csv`.
+
+### Omniture: `fact_external_db.omniture_event_fact` (special-cased)
+
+This table recurs across migrations and needs two extra conventions on top of the
+standard workflow.
+
+**1:many table split, keyed on `reporting_suite`.** Unlike every other mapping, this
+one Athena table maps to *several* Snowflake tables in `ADOBE_SILVER.B2B_DAILY` —
+each a `reporting_suite`-filtered subset (see the `omniture_event_fact` rows in
+`table_mappings.csv`; the `notes` column records each one's filter, e.g.
+`WHERE reporting_suite = 'djfactiva'` → `DJFACTIVA`). So you can't resolve this
+mapping by table name alone:
+
+- Read the datasource's source SQL and find its `reporting_suite = '<suite>'`
+  predicate; pick the Snowflake table whose filter matches that suite.
+- The chosen Snowflake table is *already* that subset, so **drop the now-redundant
+  `reporting_suite` predicate** from the translated SQL.
+- If the query filters on no suite, on multiple suites, or on a suite with no mapped
+  row, **stop and ask** — don't guess. Add the confirmed suite→table row afterward.
+
+**Column decode via `omniture_mappings.csv`.** The Athena columns are opaque
+(`prop*`, `evar*`, `post_prop*`, `post_evar*`); Snowflake mostly (not always) gives
+them descriptive names. `omniture_mappings.csv` is a flat `Athena,Snowflake` lookup.
+Resolve each referenced column the same way as table mappings: check the CSV first →
+fuzzy-infer from the Snowflake table's column names → else **ask the user** and append
+the confirmed row. Note some entries are uppercase passthroughs (e.g.
+`post_evar4 → POST_EVAR4`) — meaning no descriptive Snowflake name exists and the
+opaque name is retained.
 
 ### Snowflake Naming Conventions (new test/gold views)
 

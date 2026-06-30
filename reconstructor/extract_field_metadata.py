@@ -1,5 +1,5 @@
 """
-Extract field metadata from Tableau .twbx workbook files as CSVs.
+Extract field metadata from Tableau .twbx/.tdsx files as CSVs.
 
 For each datasource in each workbook, produces:
   - fields_<Datasource>.csv: all column elements (name, caption, datatype, role,
@@ -11,8 +11,8 @@ These are useful for building Snowflake gold tables that can serve as direct
 replace-data-source candidates in Tableau.
 
 Usage:
-    python extract_field_metadata.py                     # Process all .twbx in Inputs/
-    python extract_field_metadata.py path/to/file.twbx   # Process a specific file
+    python extract_field_metadata.py                     # Process all .twbx/.tdsx in Inputs/
+    python extract_field_metadata.py path/to/file.tdsx   # Process a specific file
 """
 
 import zipfile
@@ -22,6 +22,9 @@ import os
 import sys
 import re
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tableau_doc import parse_doc, datasource_elements, ds_label, ARCHIVE_EXTS
+
 
 def sanitize_filename(name):
     """Convert a datasource caption into a safe filename."""
@@ -30,29 +33,20 @@ def sanitize_filename(name):
     return name
 
 
-def parse_twb(twbx_path):
-    """Read the .twb XML from inside a .twbx archive and return the parsed root."""
-    with zipfile.ZipFile(twbx_path) as z:
-        twb_names = [n for n in z.namelist() if n.endswith('.twb')]
-        if not twb_names:
-            return None
-        return ET.fromstring(z.read(twb_names[0]).decode('utf-8'))
-
-
 def extract_metadata(twbx_path, output_dir):
-    """Extract field metadata CSVs from a single workbook."""
-    root = parse_twb(twbx_path)
+    """Extract field metadata CSVs from a single workbook or data source."""
+    root = parse_doc(twbx_path)
     if root is None:
-        print(f"  No .twb found inside {twbx_path}")
+        print(f"  No .twb or .tds found inside {twbx_path}")
         return
 
-    datasources_el = root.find('.//datasources')
-    if datasources_el is None:
-        print("  No datasources element found")
+    datasources = datasource_elements(root)
+    if not datasources:
+        print("  No datasource element found")
         return
 
-    for ds in datasources_el.findall('datasource'):
-        ds_caption = ds.get('caption', ds.get('name', 'unknown'))
+    for ds in datasources:
+        ds_caption = ds_label(ds) or 'unknown'
         ds_name = ds.get('name', '')
 
         if ds_name == 'Parameters' or ds_caption == 'Parameters':
@@ -160,20 +154,20 @@ def main():
 
     if len(sys.argv) > 1:
         target = sys.argv[1]
-        if os.path.isfile(target) and target.endswith('.twbx'):
+        if os.path.isfile(target) and target.endswith(ARCHIVE_EXTS):
             process_workbook(target)
         else:
-            print(f"Not a .twbx file: {target}")
+            print(f"Not a .twbx/.tdsx file: {target}")
             sys.exit(1)
     else:
         inputs_dir = os.path.join(script_dir, 'Inputs')
         twbx_files = [
             os.path.join(inputs_dir, f)
             for f in os.listdir(inputs_dir)
-            if f.endswith('.twbx')
+            if f.endswith(ARCHIVE_EXTS)
         ]
         if not twbx_files:
-            print(f"No .twbx files found in {inputs_dir}")
+            print(f"No .twbx/.tdsx files found in {inputs_dir}")
             return
         for path in sorted(twbx_files):
             process_workbook(path)

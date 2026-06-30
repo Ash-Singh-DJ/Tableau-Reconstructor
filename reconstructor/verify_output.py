@@ -30,17 +30,17 @@ import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tableau_doc import datasource_elements, ds_label, matches as _match
 
-def _read_twb(twbx_path):
-    with zipfile.ZipFile(twbx_path) as z:
-        names = [n for n in z.namelist() if n.endswith('.twb')]
+
+def _read_doc(path):
+    """Return (member_name, raw_text, all_zip_names) for the .twb/.tds bundle."""
+    with zipfile.ZipFile(path) as z:
+        names = [n for n in z.namelist() if n.endswith(('.twb', '.tds'))]
         if not names:
-            raise RuntimeError(f'No .twb found inside {twbx_path}')
+            raise RuntimeError(f'No .twb or .tds found inside {path}')
         return names[0], z.read(names[0]).decode('utf-8'), z.namelist()
-
-
-def _match(ds, match):
-    return ds.get('caption') == match or ds.get('name') == match
 
 
 def _base_col_count(ds):
@@ -61,14 +61,15 @@ def verify(output_twbx, config, input_twbx=None):
     # expected base metadata-record count per datasource (from the ORIGINAL workbook)
     base_counts = {}
     if input_twbx:
-        _, raw_in, _ = _read_twb(input_twbx)
+        _, raw_in, _ = _read_doc(input_twbx)
         root_in = ET.fromstring(raw_in)
-        for ds in root_in.find('.//datasources').findall('datasource'):
+        for ds in datasource_elements(root_in):
             base_counts[ds.get('name')] = _base_col_count(ds)
-            if ds.get('caption'):
-                base_counts[ds.get('caption')] = _base_col_count(ds)
+            label = ds_label(ds)
+            if label:
+                base_counts[label] = _base_col_count(ds)
 
-    twb, raw, names = _read_twb(output_twbx)
+    twb, raw, names = _read_doc(output_twbx)
     hypers = [n for n in names if n.endswith('.hyper')]
     print(f"ZIP entries: {len(names)} | .hyper files: {len(hypers)}  "
           f"-> {'OK (none)' if not hypers else 'FAIL'}")
@@ -77,12 +78,12 @@ def verify(output_twbx, config, input_twbx=None):
           f"-> {'OK' if n_athena == 0 else 'CHECK'}")
 
     root = ET.fromstring(raw)
-    dss = root.find('.//datasources')
+    all_datasources = datasource_elements(root)
     ok = (not hypers) and (n_athena == 0)
 
     for ds_cfg in config['datasources']:
         match = ds_cfg.get('match') or ds_cfg.get('name')
-        hits = [ds for ds in dss.findall('datasource') if _match(ds, match)]
+        hits = [ds for ds in all_datasources if _match(ds, match)]
         if not hits:
             print(f"\n[{match}]  -> FAIL (not found in output)")
             ok = False
@@ -112,7 +113,7 @@ def verify(output_twbx, config, input_twbx=None):
         if match in base_counts:
             exp_mr = base_counts[match] + n_calc
 
-        print(f"\n[{ds.get('caption')}]  ({ds.get('name')})")
+        print(f"\n[{ds_label(ds)}]  ({ds.get('name')})")
         cls_ok = bool(classes) and all(c == 'snowflake' for c in classes)
         print(f"  conn classes: {classes}  -> {'OK' if cls_ok else 'FAIL'}")
         print(f"  text relations remaining: {len(text_rels)}  "

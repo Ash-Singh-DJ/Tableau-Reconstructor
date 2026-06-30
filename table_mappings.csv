@@ -1,55 +1,59 @@
 athena_database,athena_table,snowflake_database,snowflake_schema,snowflake_table,approved_date,notes
-dimension_external_db,pib_company_dimension,B2B_SILVER,SALESFORCE,COMPANY_CURRENT,2026-02-06,PIB company dimension - all key columns match
-dimension_external_db,pib_billing_account_dimension,B2B_SILVER,CIBS,BILLING_ACCOUNT_DIMENSION,2026-02-06,PIB billing account dimension - user confirmed
-dimension_external_db,pib_territory_dimension,B2B_SILVER,SALESFORCE,TERRITORY_CURRENT,2026-02-06,PIB territory dimension
-dimension_external_db,pib_user_dimension,B2B_SILVER,SALESFORCE,USER_CURRENT,2026-02-06,PIB user dimension
-reference_external_db,date_dimension,COMMON_SILVER,REFERENCE,FISCAL_DATE_DIMENSION,2026-02-06,Date dimension - all key columns match
-fact_external_db,tm1_fact,B2B_SILVER,TM1,TM1_FACT,2026-02-06,TM1 fact table - all key columns match
-reference_external_db,pib_account_mapping,B2B_SILVER,GOOGLE_SHEETS,PIB_ACCOUNT_MAPPING,2026-02-06,PIB account mapping - all columns match
-sandbox_hvc,ftva_prod_override,SANDBOX,B2B,hvc_table_ftva_prod_override,2026-02-06,CSV table from S3 - 74 rows loaded
-sandbox_hvc,nwrs_prod_override,SANDBOX,B2B,hvc_table_nwrs_prod_override,2026-02-06,CSV table from S3 - 67 rows loaded
-sandbox_hvc,rnc_prod_override,SANDBOX,B2B,hvc_table_rnc_prod_override,2026-02-06,CSV table from S3 - 140 rows loaded
-dimension_external_db,pib_corporate_dimension,B2B_SILVER,SALESFORCE,CORPORATE_CURRENT,2026-02-06,"PIB corporate dimension - columns: corporate_sfdc_id->ID, corporate_id->CORPORATE_ID, corporate_name->CORPORATE_NAME"
-dimension_external_db,pib_company_dimension_history,B2B_SILVER,SALESFORCE,COMPANY_HISTORY,2026-02-19,PIB company dimension history - columns: cycle_date->source_file_partition_date
-dimension_external_db,pib_opportunity_dimension_history,B2B_SILVER,SALESFORCE,OPPORTUNITY_HISTORY,2026-02-19,"PIB opportunity dimension history - columns: pib_opportunity_sfdc_id->id, opportunity_owner->owner_id, cycle_date->source_file_partition_date"
-dimension_external_db,pib_product_services_dimension_history,B2B_SILVER,SALESFORCE,PRODUCT_SERVICES_HISTORY,2026-02-19,"PIB product services dimension history - columns: sfdc_product_services_id->id, price_anual->price_annual, cycle_date->source_file_partition_date"
-reference_external_db,fx_rates_history,B2B_SILVER,FX_RATES,FX_RATES_HISTORY,2026-02-19,FX rates history - columns: year->fiscal_year
-adtech_dash_reimagine,mstr_snp_salesforce_account,B2C_SILVER,ADVERTISING_SALESFORCE,ACCOUNT,2026-02-24,"AdTech account - column renames: ownerid->OWNER_ID, accountnumber->ACCOUNT_NUMBER, duns_number__c->DUNS_NUMBER"
-adtech_dash_reimagine,mstr_snp_salesforce_user,B2C_SILVER,ADVERTISING_SALESFORCE,USER,2026-02-24,"AdTech user - columns match: id->ID, name->NAME"
-csuite_external_db,cvent_contact_history,B2B_SILVER,CVENT,CVENT_CONTACT_HISTORY,2026-02-24,Cvent contact history - etl_processed_date->SOURCE_FILE_PARTITION_DATE; status_flag and feed_timestamp missing in Snowflake
-dimension_external_db,pib_contact_dimension_history,B2B_SILVER,SALESFORCE,CONTACT_HISTORY,2026-02-24,"PIB contact dimension history - contact_sfdc_id->ID, cycle_date->SOURCE_FILE_PARTITION_DATE"
-reference_external_db,fx_rates_current,B2B_SILVER,FX_RATES,FX_RATES_CURRENT,2026-02-24,"FX rates current - columns match: currency->CURRENCY, rate->RATE"
-finance_external_db,jasper_gfo105_account_details_for_bu_history,B2B_SILVER,FINANCE,JASPER_GFO105_ACCOUNT_DETAILS_FOR_BU_HISTORY,2026-04-02,Jasper GFO105 account details - column names match; MONTHLY_AMT is TEXT in Snowflake
-finance_external_db,vendor_expense_data,B2B_SILVER,FINANCE,VENDOR_EXPENSE,2026-04-02,"Vendor expense - column names match; Snowflake has narrower date range (~13 months vs ~38 months in Athena)"
-dnb_firmographic_db,dnb_vendors_lookup,B2B_SILVER,DNB,VENDORS_LOOKUP,2026-04-02,Vendors lookup - columns match: duns/vendor_name/vendor_id
-finance_external_db,adv_partnerships,B2B_SILVER,FINANCE,ADV_PARTNERSHIPS,2026-04-02,Advertising partnerships - columns match; fiscal_year is integer-like TEXT
-finance_external_db,partnerships_current,B2B_SILVER,FINANCE,PARTNERSHIPS_CURRENT,2026-04-02,"Corporate partnerships - columns match; fiscal_year is 'FY##' format"
-finance_external_db,adv_partners_duns,B2B_SILVER,FINANCE,ADV_PARTNERS_DUNS,2026-04-03,"Adv partner DUNS lookup - columns: client/global_ult_duns; global_ult_duns is NUMERIC in Snowflake (vs string in Athena) — requires CAST(AS VARCHAR)+LPAD to restore 9-digit format"
-finance_external_db,netsuite_opis_book_of_business_history,B2B_SILVER,OPIS_NETSUITE,OPIS_NETSUITE_BOOK_OF_BUSINESS_HISTORY_CONSOLIDATED,2026-04-03,"Consolidated BoB history (not plain _HISTORY); cycle_date→SOURCE_FILE_PARTITION_DATE; LAST_BILL_DATE not LAST_BILLED_DATE. (Fixed 2026-04-21: explicit ASSOCIATED_BILLING_CUSTOMER_ID/_NAME columns landed and INTERNAL_ID is now TEXT — SUBSTRING/CAST bandages removed.)"
-dnb_firmographic_db,dnb_opis_lookup,B2B_SILVER,DNB,OPIS_LOOKUP,2026-04-03,"OPIS DUNS lookup - associated_billing_customer_id→OPIS_ID; duns→DUNS (VARCHAR); no other mapped columns"
-dnb_firmographic_db,company_information_current,B2B_SILVER,DNB,COMPANY_INFORMATION_CURRENT,2026-04-06,"DNB company info - duns_number, primary_name"
-dnb_firmographic_db,corporate_linkage_current,B2B_SILVER,DNB,CORPORATE_LINKAGE_CURRENT,2026-04-06,DNB corporate linkage - parent/hq/global_ult duns
-dnb_firmographic_db,contact_and_location_current,B2B_SILVER,DNB,CONTACT_AND_LOCATION_CURRENT,2026-04-06,DNB contact/location - country and region
-dnb_firmographic_db,industry_and_activity_current,B2B_SILVER,DNB,INDUSTRY_AND_ACTIVITY_CURRENT,2026-04-06,"DNB industry - SIC/NAICS codes, fortune1000, small_business"
-reference_external_db,industry_codes_sic,B2B_SILVER,DNB,SIC_INDUSTRY_CODE,2026-04-06,SIC industry code lookup - sic8/sic2_long/sic2_short/sic8_desc
-reference_external_db,industry_codes_naics,B2B_SILVER,DNB,NAICS_INDUSTRY_CODE,2026-04-06,NAICS industry code lookup - naics6/naics6_desc/naics3_desc/naics2_desc
-google_sheets_db,dnb_hvcs_global_ultimate_override,B2B_SILVER,GOOGLE_SHEETS,HVC_PARENT_OVERRIDE_MAPPING,2026-04-06,HVC parent override - global_ultimate_name/parent_override
-dimension_external_db,pib_opportunity_dimension,B2B_SILVER,SALESFORCE,OPPORTUNITY_CURRENT,2026-04-08,PIB opportunity dimension current - pib_opportunity_sfdc_id→ID
-dimension_external_db,pib_product_services_dimension,B2B_SILVER,SALESFORCE,PRODUCT_SERVICES_CURRENT,2026-04-08,PIB product services dimension current - sfdc_product_services_id→ID
-sandbox_hvc,high_value_clients,SANDBOX,B2B,hvc_table_high_value_clients,2026-04-06,CSV table from S3 - 53 rows loaded
-sandbox_hvc,industry_sectors,SANDBOX,B2B,hvc_table_industry_sectors,2026-04-06,CSV table from S3 - 49 rows loaded
-sandbox_hvc,holding_companies,SANDBOX,B2B,hvc_table_holding_companies,2026-04-06,CSV table from S3 - 44 rows loaded
-dimension_external_db,risk_and_compliance_accounts_current,B2B_SILVER,RISK_AND_COMPLIANCE,ACCOUNTS,2026-04-16,"R&C accounts current - username→USER_NAME, status→RC_STATUS; current-only snapshot (no history equivalent)"
-dimension_external_db,pib_product_service_attributes,B2B_SILVER,SALESFORCE,PRODUCT_SERVICE_ATTRIBUTES_CURRENT,2026-04-16,PIB product service attributes
-fact_external,omniture_event_fact,B2B_SILVER,PRODUCT_METRICS,FCT_PRODUCT_METRICS_PUBLIC_VW,2026-06-10,Modern analogue replacing omniture_event_fact; joins PIB_MEMBERSHIP_CURRENT on EID; NOT used for djfactiva suite (see ADOBE_SILVER.B2B_DAILY.DJFACTIVA)
-dimension_external_db,pib_membership_dimension,B2B_SILVER,MEMBERSHIP,PIB_MEMBERSHIP_CURRENT,2026-06-10,PIB membership dimension current; pib_member_id->EID
-reference_external_db,pib_product_dimension,B2B_SILVER,PRODUCT_DIMENSION,PRODUCT_DIMENSION,2026-06-10,PIB product dimension
-dimension_external_db,pib_contact_dimension,B2B_SILVER,SALESFORCE,CONTACT_CURRENT,2026-06-10,PIB contact dimension current; contact_sfdc_id->ID
-fact_external_db,pib_membership_fact,B2B_SILVER,MEMBERSHIP,MEMBERSHIP_FACT,2026-06-10,PIB membership fact; pib_member_id joins to EID in PIB_MEMBERSHIP_CURRENT
-dimension_external_db,pib_leads_dimension,B2B_SILVER,SALESFORCE,LEADS_CURRENT,2026-06-10,PIB leads dimension current; lead_sfdc_id->LEAD_SFDC_ID
-dimension_external_db,pib_alerts,B2B_SILVER,PIB_ALERTS,PIB_ALERTS,2026-06-10,PIB alerts; user_id->DATA_DELIVERIES_USER_ID
-fact_external_db,pib_account_hierarchy_fact,B2B_SILVER,SALESFORCE,ACCOUNT_HIERARCHY_FACT,2026-06-11,PIB account hierarchy fact; exists as a View in B2B_SILVER.SALESFORCE
-dimension_external_db,risk_and_compliance_accounts_history,B2B_SILVER,RISK_AND_COMPLIANCE,ACCOUNTS_HISTORY,2026-06-25,"R&C accounts history (DT-1 resolution); same 20-col schema as ACCOUNTS; username->USER_NAME, status->RC_STATUS; 9.8M rows across snapshots"
-dimension_external_db,cdb_source_docs_current,B2B_SILVER,CDB,CDB_SOURCE_DOCS_CURRENT,2026-06-29,CDB source docs current - user confirmed
-dimension_external_db,ip_rights_data_current,B2B_SILVER,CONTENT_LICENSING,IP_RIGHTS_CURRENT,2026-06-29,IP rights data current - user confirmed
-reference_external_db,country_reference,COMMON_SILVER,REFERENCE,COUNTRY_REFERENCE,2026-06-29,Country reference lookup - user confirmed
+dimension_external_db,pib_company_dimension,B2B_SILVER,SALESFORCE,COMPANY_CURRENT,2/6/2026,PIB company dimension - all key columns match
+dimension_external_db,pib_billing_account_dimension,B2B_SILVER,CIBS,BILLING_ACCOUNT_DIMENSION,2/6/2026,PIB billing account dimension - user confirmed
+dimension_external_db,pib_territory_dimension,B2B_SILVER,SALESFORCE,TERRITORY_CURRENT,2/6/2026,PIB territory dimension
+dimension_external_db,pib_user_dimension,B2B_SILVER,SALESFORCE,USER_CURRENT,2/6/2026,PIB user dimension
+reference_external_db,date_dimension,COMMON_SILVER,REFERENCE,FISCAL_DATE_DIMENSION,2/6/2026,Date dimension - all key columns match
+fact_external_db,tm1_fact,B2B_SILVER,TM1,TM1_FACT,2/6/2026,TM1 fact table - all key columns match
+reference_external_db,pib_account_mapping,B2B_SILVER,GOOGLE_SHEETS,PIB_ACCOUNT_MAPPING,2/6/2026,PIB account mapping - all columns match
+sandbox_hvc,ftva_prod_override,B2B_SILVER,HIGH_VALUE_CUSTOMER,FTVA_PROD_OVERRIDE,2/6/2026,CSV table from S3
+sandbox_hvc,nwrs_prod_override,B2B_SILVER,HIGH_VALUE_CUSTOMER,NWRS_PROD_OVERRIDE,2/6/2026,CSV table from S3
+sandbox_hvc,rnc_prod_override,B2B_SILVER,HIGH_VALUE_CUSTOMER,RNC_PROD_OVERRIDE,2/6/2026,CSV table from S3
+dimension_external_db,pib_corporate_dimension,B2B_SILVER,SALESFORCE,CORPORATE_CURRENT,2/6/2026,"PIB corporate dimension - columns: corporate_sfdc_id->ID, corporate_id->CORPORATE_ID, corporate_name->CORPORATE_NAME"
+dimension_external_db,pib_company_dimension_history,B2B_SILVER,SALESFORCE,COMPANY_HISTORY,2/19/2026,PIB company dimension history - columns: cycle_date->source_file_partition_date
+dimension_external_db,pib_opportunity_dimension_history,B2B_SILVER,SALESFORCE,OPPORTUNITY_HISTORY,2/19/2026,"PIB opportunity dimension history - columns: pib_opportunity_sfdc_id->id, opportunity_owner->owner_id, cycle_date->source_file_partition_date"
+dimension_external_db,pib_product_services_dimension_history,B2B_SILVER,SALESFORCE,PRODUCT_SERVICES_HISTORY,2/19/2026,"PIB product services dimension history - columns: sfdc_product_services_id->id, price_anual->price_annual, cycle_date->source_file_partition_date"
+reference_external_db,fx_rates_history,B2B_SILVER,FX_RATES,FX_RATES_HISTORY,2/19/2026,FX rates history - columns: year->fiscal_year
+adtech_dash_reimagine,mstr_snp_salesforce_account,B2C_SILVER,ADVERTISING_SALESFORCE,ACCOUNT,2/24/2026,"AdTech account - column renames: ownerid->OWNER_ID, accountnumber->ACCOUNT_NUMBER, duns_number__c->DUNS_NUMBER"
+adtech_dash_reimagine,mstr_snp_salesforce_user,B2C_SILVER,ADVERTISING_SALESFORCE,USER,2/24/2026,"AdTech user - columns match: id->ID, name->NAME"
+csuite_external_db,cvent_contact_history,B2B_SILVER,CVENT,CVENT_CONTACT_HISTORY,2/24/2026,Cvent contact history - etl_processed_date->SOURCE_FILE_PARTITION_DATE; status_flag and feed_timestamp missing in Snowflake
+dimension_external_db,pib_contact_dimension_history,B2B_SILVER,SALESFORCE,CONTACT_HISTORY,2/24/2026,"PIB contact dimension history - contact_sfdc_id->ID, cycle_date->SOURCE_FILE_PARTITION_DATE"
+reference_external_db,fx_rates_current,B2B_SILVER,FX_RATES,FX_RATES_CURRENT,2/24/2026,"FX rates current - columns match: currency->CURRENCY, rate->RATE"
+finance_external_db,jasper_gfo105_account_details_for_bu_history,B2B_SILVER,FINANCE,JASPER_GFO105_ACCOUNT_DETAILS_FOR_BU_HISTORY,4/2/2026,Jasper GFO105 account details - column names match; MONTHLY_AMT is TEXT in Snowflake
+finance_external_db,vendor_expense_data,B2B_SILVER,FINANCE,VENDOR_EXPENSE,4/2/2026,Vendor expense - column names match; Snowflake has narrower date range (~13 months vs ~38 months in Athena)
+dnb_firmographic_db,dnb_vendors_lookup,B2B_SILVER,DNB,VENDORS_LOOKUP,4/2/2026,Vendors lookup - columns match: duns/vendor_name/vendor_id
+finance_external_db,adv_partnerships,B2B_SILVER,FINANCE,ADV_PARTNERSHIPS,4/2/2026,Advertising partnerships - columns match; fiscal_year is integer-like TEXT
+finance_external_db,partnerships_current,B2B_SILVER,FINANCE,PARTNERSHIPS_CURRENT,4/2/2026,Corporate partnerships - columns match; fiscal_year is 'FY##' format
+finance_external_db,adv_partners_duns,B2B_SILVER,FINANCE,ADV_PARTNERS_DUNS,4/3/2026,Adv partner DUNS lookup - columns: client/global_ult_duns; global_ult_duns is NUMERIC in Snowflake (vs string in Athena) — requires CAST(AS VARCHAR)+LPAD to restore 9-digit format
+finance_external_db,netsuite_opis_book_of_business_history,B2B_SILVER,OPIS_NETSUITE,OPIS_NETSUITE_BOOK_OF_BUSINESS_HISTORY_CONSOLIDATED,4/3/2026,Consolidated BoB history (not plain _HISTORY); cycle_date→SOURCE_FILE_PARTITION_DATE; LAST_BILL_DATE not LAST_BILLED_DATE. (Fixed 2026-04-21: explicit ASSOCIATED_BILLING_CUSTOMER_ID/_NAME columns landed and INTERNAL_ID is now TEXT — SUBSTRING/CAST bandages removed.)
+dnb_firmographic_db,dnb_opis_lookup,B2B_SILVER,DNB,OPIS_LOOKUP,4/3/2026,OPIS DUNS lookup - associated_billing_customer_id→OPIS_ID; duns→DUNS (VARCHAR); no other mapped columns
+dnb_firmographic_db,company_information_current,B2B_SILVER,DNB,COMPANY_INFORMATION_CURRENT,4/6/2026,"DNB company info - duns_number, primary_name"
+dnb_firmographic_db,corporate_linkage_current,B2B_SILVER,DNB,CORPORATE_LINKAGE_CURRENT,4/6/2026,DNB corporate linkage - parent/hq/global_ult duns
+dnb_firmographic_db,contact_and_location_current,B2B_SILVER,DNB,CONTACT_AND_LOCATION_CURRENT,4/6/2026,DNB contact/location - country and region
+dnb_firmographic_db,industry_and_activity_current,B2B_SILVER,DNB,INDUSTRY_AND_ACTIVITY_CURRENT,4/6/2026,"DNB industry - SIC/NAICS codes, fortune1000, small_business"
+reference_external_db,industry_codes_sic,B2B_SILVER,DNB,SIC_INDUSTRY_CODE,4/6/2026,SIC industry code lookup - sic8/sic2_long/sic2_short/sic8_desc
+reference_external_db,industry_codes_naics,B2B_SILVER,DNB,NAICS_INDUSTRY_CODE,4/6/2026,NAICS industry code lookup - naics6/naics6_desc/naics3_desc/naics2_desc
+google_sheets_db,dnb_hvcs_global_ultimate_override,B2B_SILVER,GOOGLE_SHEETS,HVC_PARENT_OVERRIDE_MAPPING,4/6/2026,HVC parent override - global_ultimate_name/parent_override
+dimension_external_db,pib_opportunity_dimension,B2B_SILVER,SALESFORCE,OPPORTUNITY_CURRENT,4/8/2026,PIB opportunity dimension current - pib_opportunity_sfdc_id→ID
+dimension_external_db,pib_product_services_dimension,B2B_SILVER,SALESFORCE,PRODUCT_SERVICES_CURRENT,4/8/2026,PIB product services dimension current - sfdc_product_services_id→ID
+sandbox_hvc,high_value_clients,B2B_SILVER,HIGH_VALUE_CUSTOMER,HIGH_VALUE_CLIENTS,4/6/2026,CSV table from S3
+sandbox_hvc,industry_sectors,B2B_SILVER,HIGH_VALUE_CUSTOMER,INDUSTRY_SECTORS,4/6/2026,CSV table from S3
+sandbox_hvc,holding_companies,B2B_SILVER,HIGH_VALUE_CUSTOMER,HOLDING_COMPANIES,4/6/2026,CSV table from S3
+dimension_external_db,risk_and_compliance_accounts_current,B2B_SILVER,RISK_AND_COMPLIANCE,ACCOUNTS,4/16/2026,"R&C accounts current - username->USER_NAME, status->RC_STATUS; current-only snapshot"
+dimension_external_db,pib_product_service_attributes,B2B_SILVER,SALESFORCE,PRODUCT_SERVICE_ATTRIBUTES_CURRENT,4/16/2026,PIB product service attributes
+pib_event_data,pib_product_metrics,B2B_SILVER,PRODUCT_METRICS,FCT_PRODUCT_METRICS_PUBLIC_VW,6/10/2026,Joins PIB_MEMBERSHIP_CURRENT on EID
+dimension_external_db,pib_membership_dimension,B2B_SILVER,MEMBERSHIP,PIB_MEMBERSHIP_CURRENT,6/10/2026,PIB membership dimension current; pib_member_id->EID
+reference_external_db,pib_product_dimension,B2B_SILVER,PRODUCT_DIMENSION,PRODUCT_DIMENSION,6/10/2026,PIB product dimension
+dimension_external_db,pib_contact_dimension,B2B_SILVER,SALESFORCE,CONTACT_CURRENT,6/10/2026,PIB contact dimension current; contact_sfdc_id->ID
+fact_external_db,pib_membership_fact,B2B_SILVER,MEMBERSHIP,MEMBERSHIP_FACT,6/10/2026,PIB membership fact; pib_member_id joins to EID in PIB_MEMBERSHIP_CURRENT
+dimension_external_db,pib_leads_dimension,B2B_SILVER,SALESFORCE,LEADS_CURRENT,6/10/2026,PIB leads dimension current; lead_sfdc_id->LEAD_SFDC_ID
+dimension_external_db,pib_alerts,B2B_SILVER,PIB_ALERTS,PIB_ALERTS,6/10/2026,PIB alerts; user_id->DATA_DELIVERIES_USER_ID
+fact_external_db,pib_account_hierarchy_fact,B2B_SILVER,SALESFORCE,ACCOUNT_HIERARCHY_FACT,6/11/2026,PIB account hierarchy fact; exists as a View in B2B_SILVER.SALESFORCE
+dimension_external_db,risk_and_compliance_accounts_history,B2B_SILVER,RISK_AND_COMPLIANCE,ACCOUNTS_HISTORY,6/25/2026,"R&C accounts history (DT-1 resolution); same 20-col schema as ACCOUNTS; username->USER_NAME, status->RC_STATUS"
+dimension_external_db,cdb_source_docs_current,B2B_SILVER,CDB,CDB_SOURCE_DOCS_CURRENT,6/29/2026,CDB source docs current - user confirmed
+dimension_external_db,ip_rights_data_current,B2B_SILVER,CONTENT_LICENSING,IP_RIGHTS_CURRENT,6/29/2026,IP rights data current - user confirmed
+reference_external_db,country_reference,COMMON_SILVER,REFERENCE,COUNTRY_REFERENCE,6/29/2026,Country reference lookup - user confirmed
+fact_external_db,omniture_event_fact,ADOBE_SILVER,B2B_DAILY,DJAPPFACTIVA,6/30/2026,Subset of Athena table: WHERE reporting_suite = 'djappfactiva'
+fact_external_db,omniture_event_fact,ADOBE_SILVER,B2B_DAILY,DJFACTIVA,6/30/2026,Subset of Athena table: WHERE reporting_suite = 'djfactiva'
+fact_external_db,omniture_event_fact,ADOBE_SILVER,B2B_DAILY,DJPIBGLOBAL,6/30/2026,Subset of Athena table: WHERE reporting_suite = 'djpibglobal'
+fact_external_db,omniture_event_fact,ADOBE_SILVER,B2B_DAILY,DJRISKCOMPLIANCEPROD,6/30/2026,Subset of Athena table: WHERE reporting_suite = 'djriskcomplianceprod'

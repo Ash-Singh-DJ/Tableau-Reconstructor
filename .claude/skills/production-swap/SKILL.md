@@ -1,28 +1,33 @@
 ---
 name: production-swap
 description: >-
-  Repoint an already-Snowflake-backed Tableau .twbx from one Snowflake table to
-  another — typically swapping a SANDBOX view for a final production table
-  (B2B_GOLD or another production schema). Validates that the production table's
-  columns are a superset of the columns the workbook binds (a seamless swap), and
-  if a column was renamed in production, rewrites the affected metadata-records via
-  a supplied column map. Preserves extract mode, calculated fields, drill-down
-  hierarchies, and every worksheet binding — only the table target and database/
-  schema context change. Use when the user wants to point a Snowflake dashboard at
-  a production/gold table, "production swap" or "promote" a workbook from SANDBOX,
-  or move a workbook from a test view to its final table. Operates in the
-  Tableau-Reconstructor repo. This is NOT an Athena→Snowflake migration — for that
-  use tableau-source-swap.
+  Repoint an already-Snowflake-backed Tableau .twbx (or standalone .tdsx data
+  source) from one Snowflake table to another — typically swapping a SANDBOX view
+  for a final production table (B2B_GOLD or another production schema). Validates
+  that the production table's columns are a superset of the columns the workbook
+  binds (a seamless swap), and if a column was renamed in production, rewrites the
+  affected metadata-records via a supplied column map. Preserves extract mode,
+  calculated fields, drill-down hierarchies, and every worksheet binding — only the
+  table target and database/schema context change. Use when the user wants to point
+  a Snowflake dashboard at a production/gold table, "production swap" or "promote" a
+  workbook from SANDBOX, or move a workbook from a test view to its final table.
+  Operates in the Tableau-Reconstructor repo. This is NOT an Athena→Snowflake
+  migration — for that use tableau-source-swap.
 ---
 
 # Production Swap (Snowflake → Snowflake table repoint)
 
-Given a Tableau `.twbx` that is **already Snowflake-backed** (e.g. pointing at a
-`SANDBOX` view), repoint one or more of its datasources at a final production table
-and produce a new `.twbx`. This is a narrow, surgical edit: the connection stays
-Snowflake, scaffolding is untouched, and the only changes are the table target, the
-database/schema context, and (optionally) remote-names for columns that were renamed
-in production.
+Given a Tableau `.twbx` (or standalone `.tdsx` data source) that is **already
+Snowflake-backed** (e.g. pointing at a `SANDBOX` view), repoint one or more of its
+datasources at a final production table and produce a new file of the same type.
+This is a narrow, surgical edit: the connection stays Snowflake, scaffolding is
+untouched, and the only changes are the table target, the database/schema context,
+and (optionally) remote-names for columns that were renamed in production.
+
+**`.twbx` vs `.tdsx`:** identical workflow. A `.tdsx` bundles a `.tds` whose root is
+a single `<datasource>` (no worksheets; identified by `formatted-name` rather than a
+caption). The engine handles both — pass either path and the output keeps the
+input's extension. Substitute `.tdsx` for `.twbx` in the paths below.
 
 If the source workbook is Athena-backed, this is the wrong skill — use
 `tableau-source-swap` to migrate it first, then this skill to promote it.
@@ -41,7 +46,7 @@ If the source workbook is Athena-backed, this is the wrong skill — use
 
 ## What to gather up front
 
-1. Path to the source `.twbx` (already Snowflake-backed) — typically under
+1. Path to the source `.twbx`/`.tdsx` (already Snowflake-backed) — typically under
    `Inputs/` or a prior `Source Swap` output.
 2. **For each datasource to repoint: the target production table** as fully
    qualified `DB.SCHEMA.TABLE` (e.g. `B2B_GOLD.HIGH_VALUE_CUSTOMER.PROFILER_FULL_GOLD`).
@@ -63,10 +68,13 @@ PY=python
 
 `--list` shows every Snowflake-backed datasource with its `current table` and bound
 columns (base + any materialized calc columns, which are now physical). Present this
-and confirm with the user which datasource(s) map to which production table.
+and confirm with the user which datasource(s) map to which production table. (Pass a
+`.tdsx` here exactly the same way; it lists its single datasource.)
 
 `--emit-config` prints a config skeleton (each datasource pre-filled with its
-current table and bound columns as `_`-prefixed hints) to fill in.
+current table and bound columns as `_`-prefixed hints) to fill in. The `match` value
+is the datasource caption for a `.twbx`, or the `formatted-name` for a `.tdsx` — the
+skeleton pre-fills whichever applies.
 
 ## Phase 2 — Discover production columns & compare (the validation gate)
 
@@ -154,13 +162,15 @@ Statically confirm the output:
 
 The real gate is the **Tableau open test**, which only the user can run:
 
-1. Open the `Production Swap` `.twbx` (prompts for Snowflake OAuth sign-in).
+1. Open the `Production Swap` `.twbx`/`.tdsx` (prompts for Snowflake OAuth sign-in).
+   A `.tdsx` opens as a data source, not a workbook.
 2. Confirm worksheets render with no "field is missing" warnings; hierarchies and
-   calc fields intact; visuals match the pre-swap workbook.
+   calc fields intact; visuals match the pre-swap workbook. (A `.tdsx` has no
+   worksheets — confirm the field list and calc fields instead.)
 
-Always surface this manual follow-up — it can't be done in the `.twbx` rewrite:
+Always surface this manual follow-up — it can't be done in the file rewrite:
 
-- **Refresh the extract if the workbook is extract-backed.** Production swap
+- **Refresh the extract if the source is extract-backed.** Production swap
   preserves extract mode, so an extract still holds the *old* SANDBOX data until
   refreshed. In Tableau: **Data → [datasource] → Extract Data… → Extract → Save**
   (or Refresh) to repopulate from the production table.
