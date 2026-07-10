@@ -17,6 +17,7 @@ reference_external_db,fx_rates_history,B2B_SILVER,FX_RATES,FX_RATES_HISTORY,2/19
 adtech_dash_reimagine,mstr_snp_salesforce_account,B2C_SILVER,ADVERTISING_SALESFORCE,ACCOUNT,2/24/2026,"AdTech account - column renames: ownerid->OWNER_ID, accountnumber->ACCOUNT_NUMBER, duns_number__c->DUNS_NUMBER"
 adtech_dash_reimagine,mstr_snp_salesforce_user,B2C_SILVER,ADVERTISING_SALESFORCE,USER,2/24/2026,"AdTech user - columns match: id->ID, name->NAME"
 csuite_external_db,cvent_contact_history,B2B_SILVER,CVENT,CVENT_CONTACT_HISTORY,2/24/2026,Cvent contact history - etl_processed_date->SOURCE_FILE_PARTITION_DATE; status_flag and feed_timestamp missing in Snowflake
+csuite_external_db,registration,B2B_SILVER,CVENT,CVENT_REGISTRATION_CURRENT,7/7/2026,Cvent registration - status->EVENT_STATUS; status_flag missing in Snowflake
 dimension_external_db,pib_contact_dimension_history,B2B_SILVER,SALESFORCE,CONTACT_HISTORY,2/24/2026,"PIB contact dimension history - contact_sfdc_id->ID, cycle_date->SOURCE_FILE_PARTITION_DATE"
 reference_external_db,fx_rates_current,B2B_SILVER,FX_RATES,FX_RATES_CURRENT,2/24/2026,"FX rates current - columns match: currency->CURRENCY, rate->RATE"
 finance_external_db,jasper_gfo105_account_details_for_bu_history,B2B_SILVER,FINANCE,JASPER_GFO105_ACCOUNT_DETAILS_FOR_BU_HISTORY,4/2/2026,Jasper GFO105 account details - column names match; MONTHLY_AMT is TEXT in Snowflake
@@ -53,7 +54,30 @@ dimension_external_db,risk_and_compliance_accounts_history,B2B_SILVER,RISK_AND_C
 dimension_external_db,cdb_source_docs_current,B2B_SILVER,CDB,CDB_SOURCE_DOCS_CURRENT,6/29/2026,CDB source docs current - user confirmed
 dimension_external_db,ip_rights_data_current,B2B_SILVER,CONTENT_LICENSING,IP_RIGHTS_CURRENT,6/29/2026,IP rights data current - user confirmed
 reference_external_db,country_reference,COMMON_SILVER,REFERENCE,COUNTRY_REFERENCE,6/29/2026,Country reference lookup - user confirmed
+fact_external_db,omniture_event_fact,ADOBE_SILVER,B2C_HOURLY,DJGLOBAL_HOURLY,7/7/2026,Subset of Athena table: WHERE reporting_suite = 'djglobal'
+fact_external_db,omniture_event_fact,ADOBE_SILVER,B2C_HOURLY,DJAPPWSJ_HOURLY,7/7/2026,Subset of Athena table: WHERE reporting_suite = 'djappwsj'
 fact_external_db,omniture_event_fact,ADOBE_SILVER,B2B_DAILY,DJAPPFACTIVA,6/30/2026,Subset of Athena table: WHERE reporting_suite = 'djappfactiva'
 fact_external_db,omniture_event_fact,ADOBE_SILVER,B2B_DAILY,DJFACTIVA,6/30/2026,Subset of Athena table: WHERE reporting_suite = 'djfactiva'
 fact_external_db,omniture_event_fact,ADOBE_SILVER,B2B_DAILY,DJPIBGLOBAL,6/30/2026,Subset of Athena table: WHERE reporting_suite = 'djpibglobal'
 fact_external_db,omniture_event_fact,ADOBE_SILVER,B2B_DAILY,DJRISKCOMPLIANCEPROD,6/30/2026,Subset of Athena table: WHERE reporting_suite = 'djriskcomplianceprod'
+sandbox_ak,email_marketing_dashboard_6_months_pib,B2B_SILVER,ELOQUA,EMAIL_MARKETING_DASHBOARD_PIB_VW,7/1/2026,Eloqua email marketing dashboard (PIB) - all 14 columns match exactly; view preferred over base table
+dimension_external_db,pib_campaign_dimension,B2B_SILVER,SALESFORCE,CAMPAIGN_CURRENT,7/1/2026,PIB campaign dimension - sfdc_campaign_id->ID; name->NAME
+dimension_external_db,pib_campaign_influence,B2B_SILVER,SALESFORCE,CAMPAIGN_INFLUENCE_CURRENT,7/1/2026,PIB campaign influence - campaign_id->CAMPAIGN_ID; opportunity_id->OPPORTUNITY_ID
+edwcatalog.dataprep,corporate_user_daily,SUBSCRIPTION_SILVER,DATAPREP,CORPORATE_USER_DAILY,7/2/2026,Corporate user daily - user confirmed
+subscription_external_db,csuite_membership_redemption_codes_history,B2B_SILVER,CSUITE_MEMBERSHIP,CSUITE_MEMBERSHIP_REDEMPTION_CODES_HISTORY,7/7/2026,C-Suite membership redemption codes history - license_key/used_perc columns; cycle_date->LAST_MODIFIED_DATETIME
+dimension_external_db,pib_cibs_billing_charges_dimension,B2B_SILVER,SALESFORCE,CIBS_BILLING_CHARGES_CURRENT,7/7/2026,CIBS billing charges current - user confirmed
+pib_event_data,pib_platform_trace,B2B_SILVER,PLATFORM_TRACE,FCT_PLATFORM_TRACE_VW,7/7/2026,Platform trace events - user confirmed
+pib_event_data,pib_platform_trace_private_user,B2B_SILVER,PLATFORM_TRACE,FCT_PLATFORM_TRACE_PRIVATE_USER_DATA_VW,7/7/2026,Platform trace private user events - user confirmed
+dimension_external_db,pib_customer_service_case_dimension,B2B_SILVER,SALESFORCE,CUSTOMER_SERVICE_CURRENT,7/7/2026,Customer service case dimension - user confirmed
+dimension_external_db,pib_product_configuration_request_dimension,B2B_SILVER,SALESFORCE,PRODUCT_CONFIGURATION_REQUEST_CURRENT,7/7/2026,Product configuration request dimension - user confirmed
+dimension_external_db,airtable_csuite_company,B2C_SILVER,AIRTABLE,COMPANY_LIST,7/8/2026,CSuite Airtable company - user confirmed
+dimension_external_db,airtable_csuite_executive,B2C_SILVER,AIRTABLE,EXECUTIVE_LIST,7/8/2026,CSuite Airtable executive - user confirmed
+subscription_external_db,circulation_mosaic_cust_subscription,SUBSCRIPTION_SILVER,DATAPREP,MOSAIC_CUST_SUBSCRIPTION,7/8/2026,Circulation Mosaic customer subscription - user confirmed
+dimension_external_db,content_volumes,B2B_SILVER,CONTENT,CONTENT_VOLUMES_CURRENT,7/9/2026,"Content volumes - columns match: source_code/publication_month/end_date/article_count/actual_start_date/actual_end_date"
+dimension_external_db,royalty_monthly_payment_analysis,B2B_SILVER,ROYALTY_MONTHLY,PAYMENT_ANALYSIS,7/9/2026,"Royalty monthly payment analysis - input_provider_code->PUBCODE (2386 distinct provider codes); NAME=publisher name; PR=relation contact; cycle_date->SOURCE_FILE_PARTITION_DATE (monthly 2017-2026)"
+dimension_external_db,royalty_monthly_carry_forward_report,B2B_SILVER,ROYALTY_MONTHLY,CARRY_FORWARD_REPORT,7/9/2026,"Royalty monthly carry forward - rpc_id/pr_comments/local_currency_id/ammount_local/ammount_usd(->AMMOUNT_2_USD); cycle_date->SOURCE_FILE_PARTITION_DATE"
+dimension_external_db,royalty_monthly_management_report,B2B_SILVER,ROYALTY_MONTHLY,MANAGEMENT_REPORT,7/9/2026,"Royalty monthly management report - DRIFT: Athena gpw_revenue/investment_banker_revenue/lexis_revenue(+_hits) dropped in Snowflake; Snowflake adds CISION_REVENUE/RISK_AND_COMPLIANCE_REVENUE/GEN_AI_HITS; spaced cols ROYALTY PROVIDER CODE/NAME; cycle_date->SOURCE_FILE_PARTITION_DATE"
+dimension_external_db,cdb_group_docs_current,B2B_SILVER,CDB,CDB_GROUP_DOCS_CURRENT,7/9/2026,"CDB group docs current - groupinfo_code_value/groupinfo_grouptypecode_code_value/groupinfo_groupname"
+sandbox_mk,factiva_content_value_index_ui,B2B_SILVER,MODEL_OUTPUT,FACTIVA_CONTENT_VALUE_INDEX_UI,7/9/2026,"Factiva content value index - period/source_code/value_index/normal_demand_index/normal_strategic_value_multiplier/payments_actual/predicted_cost/payment_level/max_on_target; note: no cycle_date col, has SOURCE_FILE_PARTITION_DATE"
+google_sheets_db,sap_export_royalties,B2B_SILVER,GOOGLE_SHEETS,SAP_EXPORTS_ROYALTIES,7/9/2026,"SAP export royalties - vendor->VENDOR_ID; ps_vendor->PS_VENDOR; 1042_reporting->COL_1042_REPORTING(bool); services_royalty->SERVICES_ROYALTY; business_partners->BUSINESS_PARTNERS; name->NAME; old_second_vendor_name->OLD_SECOND_VENDOR_NAME; ftin->FTIN"
+sandbox_mk,ip_rights_data_current,B2B_SILVER,CONTENT_LICENSING,IP_RIGHTS_CURRENT,7/9/2026,"IP rights (sandbox_mk alias of same table as dimension_external_db.ip_rights_data_current); status->IP_STATUS; other columns match snake_case"
