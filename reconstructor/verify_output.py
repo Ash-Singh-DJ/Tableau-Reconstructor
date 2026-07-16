@@ -26,12 +26,45 @@ Exit code 0 if all checks pass, 1 otherwise.
 import argparse
 import json
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
 
+# a relation-qualified field reference: [Relation Name].[column]
+_QUALIFIED_REF = re.compile(r'\[([^\]]+)\]\.\[([^\]]+)\]')
+
+
+def _stale_cols_refs(ds):
+    """Find <connection>/<cols> map entries whose value points at a relation no
+    longer present in the datasource's (post-collapse) relation tree.
+
+    The cols map values are relation-qualified physical columns ([Rel].[col]).
+    When a joined datasource is collapsed into one gold view, the old per-relation
+    names (e.g. [Custom SQL Query]) vanish from the relation tree; any surviving
+    [oldrel].[col] here is a broken binding Tableau cannot resolve -- exactly the
+    join-collapse rebind failure. Scoped to the cols map to avoid false positives
+    from legitimate cross-refs elsewhere (parameters, geographic roles, the 3-part
+    [DB].[SCHEMA].[VIEW] table name, internal object ids).
+
+    Returns a sorted list of (relation_name, sample_column) offenders."""
+    conn = ds.find('connection')
+    cols = conn.find('cols') if conn is not None else None
+    if cols is None:
+        return []
+    valid = {r.get('name') for r in ds.iter('relation') if r.get('name')}
+    offenders = {}
+    for m in cols.findall('map'):
+        val = m.get('value') or ''
+        ref = _QUALIFIED_REF.search(val)
+        if ref and ref.group(1) not in valid:
+            offenders.setdefault(ref.group(1), ref.group(2))
+    return sorted(offenders.items())
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tableau_doc import datasource_elements, ds_label, matches as _match
+from reconstruct import (derive_bindings, collect_referenced_locals,
+                         join_key_operands)
 
 
 def _read_doc(path):
@@ -43,31 +76,36 @@ def _read_doc(path):
         return names[0], z.read(names[0]).decode('utf-8'), z.namelist()
 
 
-def _base_col_count(ds):
-    conn = ds.find('connection')
-    if conn is None:
-        return 0
-    mrs = conn.find('metadata-records')
-    if mrs is None:
-        return 0
-    return sum(1 for r in mrs.findall('metadata-record') if r.get('class') == 'column')
-
-
 def verify(output_twbx, config, input_twbx=None):
     conn_cfg = config.get('connection', {})
     db = conn_cfg.get('dbname', 'SANDBOX')
     schema = conn_cfg.get('schema', 'B2B')
 
-    # expected base metadata-record count per datasource (from the ORIGINAL workbook)
-    base_counts = {}
+    # expected base metadata-record count per datasource. Derived from the engine's
+    # own derive_bindings on the ORIGINAL workbook (with the same config), so a
+    # legitimate physical-name-collision drop is reflected in the expected count
+    # rather than flagged as a mismatch. Falls back to a raw column count if the
+    # engine can't be applied.
+    root_in = None
     if input_twbx:
         _, raw_in, _ = _read_doc(input_twbx)
         root_in = ET.fromstring(raw_in)
-        for ds in datasource_elements(root_in):
-            base_counts[ds.get('name')] = _base_col_count(ds)
-            label = ds_label(ds)
-            if label:
-                base_counts[label] = _base_col_count(ds)
+
+    def expected_base_count(ds_cfg):
+        if root_in is None:
+            return None
+        match = ds_cfg.get('match') or ds_cfg.get('name')
+        hits = [ds for ds in datasource_elements(root_in) if _match(ds, match)]
+        if not hits:
+            return None
+        ds_in = hits[0]
+        conn = ds_in.find('connection')
+        top = conn.find('relation') if conn is not None else None
+        referenced = collect_referenced_locals(root_in, ds_in.get('name'))
+        join_ops = join_key_operands(top)
+        bindings = derive_bindings(ds_in, ds_cfg, referenced_locals=referenced,
+                                   join_operands=join_ops)
+        return sum(1 for b in bindings if not b['is_calc'])
 
     twb, raw, names = _read_doc(output_twbx)
     hypers = [n for n in names if n.endswith('.hyper')]
@@ -109,9 +147,8 @@ def verify(output_twbx, config, input_twbx=None):
         ndp = len(dp.findall('drill-path')) if dp is not None else 0
 
         n_calc = len(ds_cfg.get('calc_bindings', []))
-        exp_mr = None
-        if match in base_counts:
-            exp_mr = base_counts[match] + n_calc
+        exp_base = expected_base_count(ds_cfg)
+        exp_mr = None if exp_base is None else exp_base + n_calc
 
         print(f"\n[{ds_label(ds)}]  ({ds.get('name')})")
         cls_ok = bool(classes) and all(c == 'snowflake' for c in classes)
@@ -147,7 +184,16 @@ def verify(output_twbx, config, input_twbx=None):
         print(f"  worksheet calc collisions for materialized ids: {leftover}  "
               f"-> {'OK' if leftover == 0 else 'FAIL'}")
 
-        if not cls_ok or text_rels or not view_rels or leftover:
+        # stale relation-qualified refs in the cols map (join-collapse rebind bug)
+        stale = _stale_cols_refs(ds)
+        if stale:
+            print(f"  stale cols-map relation refs: {len(stale)}  -> FAIL")
+            for relname, col in stale:
+                print(f"      [{relname}].[{col}] ... (relation absent from collapsed tree)")
+        else:
+            print(f"  stale cols-map relation refs: 0  -> OK")
+
+        if not cls_ok or text_rels or not view_rels or leftover or stale:
             ok = False
         if exp_mr is not None and len(mr_cols) != exp_mr:
             ok = False

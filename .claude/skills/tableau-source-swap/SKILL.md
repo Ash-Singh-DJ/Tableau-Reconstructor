@@ -95,6 +95,19 @@ a bespoke swap (collapse the SQL leaves into the view, keep the non-SQL leaf as 
 remaining federated join). Either resolve it bespoke or omit that datasource from
 the config to swap the rest.
 
+**⚠ Join-key columns must stay duplicated in the gold view (do NOT deduplicate).**
+When a joined datasource is flattened into one view, the column(s) the JOIN keys on
+appear on *both* sides of the ON-clause and must survive as **distinct physical
+columns** in the view — the workbook binds each side to its own internal field.
+Build the flattened `gold_<Datasource>.sql` so every join-key column is selected
+once **per relation** (e.g. `csq.RecordID`, `csq1.record_id AS RECORD_ID`); never
+`SELECT DISTINCT` them away or merge them into one. This duplication is load-bearing
+downstream: the **production swap** later repoints the view to a Gold table by
+matching physical column names 1:1, so if the Gold table drops or merges a
+join-key column that rebind breaks. `reconstruct.py` prints the join-key columns and
+a "do NOT deduplicate in Gold" warning into `RECONSTRUCTION_NOTES.md` — carry that
+warning forward to whoever productionizes the view.
+
 ## Phase 2 — Translate (only datasources without an existing gold table)
 
 For each datasource lacking a gold table, translate its Athena/Presto SQL to
@@ -162,6 +175,20 @@ skeleton pre-fills whichever applies):
   that gold column to the original calc field so the workbook keeps the field.
 - Base bindings are **auto-derived** from the workbook's metadata-records — don't
   list them.
+- **`column_overrides`** (optional, per-datasource) — a map that pins specific
+  physical column names, overriding derived `casing`. Key on either the workbook's
+  original remote-name or its local field name; value is the exact gold column:
+  `"column_overrides": { "record_id": "RECORD_ID_CSQ1", "[record_id]": "RECORD_ID" }`.
+  Use it mainly to resolve a **collision** (below) by giving both sides distinct
+  gold columns — and make sure the gold view actually exposes those names.
+- **Physical-name collisions (joined datasources).** After a join-collapse, two
+  source columns can map to the *same* gold physical name (e.g. two `record_id`
+  columns from different relations, both → `RECORD_ID`). The single view exposes one
+  column per name, so the engine resolves it: it keeps a worksheet-referenced member
+  (or, on a tie, the actual join-key column) and **drops** the unreferenced one(s),
+  logging the drop in the report + notes. If **two or more colliding columns are both
+  worksheet-referenced**, it can't safely drop either and **stops** — add
+  `column_overrides` to give them distinct gold columns (and expose both in the view).
 - Datasources omitted from the config are left untouched (Glossary, Parameters,
   live or Google-Drive sources).
 
@@ -190,7 +217,10 @@ Then **statically verify** the output:
 It confirms: no `athena` substring remains; 0 `.hyper` entries; 0 leftover
 `type="text"` relations in target datasources; every target relation points at its
 gold view; metadata-record counts match (base + calc, asserted when `--input` is
-given); 0 leftover worksheet calc collisions. A pre-existing `[Extract].[Extract]`
+given); 0 leftover worksheet calc collisions; and **0 stale `<cols>`-map relation
+refs** — a join-collapsed datasource whose `<cols>` map still points at a
+pre-collapse relation name (`[Custom SQL Query].[col]`) is a broken rebind and fails
+here. A pre-existing `[Extract].[Extract]`
 ref under an *untouched* datasource (e.g. a Google-Drive Glossary) is fine — just
 confirm it's not in a target. (For a `.tdsx` there are no worksheets, so the
 worksheet-collision check is trivially 0 — that's expected, not a gap.)

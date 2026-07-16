@@ -26,6 +26,8 @@ cp .env.example .env          # then fill in AWS + Snowflake values
 Snowflake auth is browser OAuth (Okta) — the first query of a session opens a
 browser to sign in.
 
+Create an 'Inputs' and 'Outputs' folder in your cloned directory; these are by default gitignored.
+
 ---
 
 ## Workflow: `tableau-source-swap` (Athena → Snowflake)

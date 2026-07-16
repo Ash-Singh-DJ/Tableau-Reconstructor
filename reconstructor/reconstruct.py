@@ -81,9 +81,11 @@ import argparse
 import copy
 import json
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tableau_doc import (read_doc, split_prefix, datasource_elements, ds_label,
@@ -184,15 +186,47 @@ def apply_casing(name, casing):
     return name  # 'exact'
 
 
-def derive_bindings(ds, ds_cfg):
+def derive_bindings(ds, ds_cfg, referenced_locals=None, join_operands=None, report=None):
     """Ordered binding list. Base bindings auto-derived from the existing
     connection-level metadata-records (local-name + local-type preserved;
-    remote-name = casing(original local-name) to match the gold physical column).
-    Calc bindings appended from config."""
+    remote-name = casing(original remote-name) to match the gold physical column).
+    Calc bindings appended from config.
+
+    A joined datasource collapsed into one flat view can carry several source
+    columns whose physical name collides after casing (e.g. two `record_id`
+    columns joined from different relations, both -> `RECORD_ID`). The single gold
+    view exposes each physical name once, so a collision must be resolved:
+
+      * `column_overrides` (per-datasource config map: original remote-name OR local
+        field -> gold physical column) pins names explicitly and short-circuits any
+        collision -- use it to KEEP both colliding columns under distinct names.
+      * otherwise, of the colliding members keep the "best" one and DROP the rest
+        with a warning, where best = (referenced by a worksheet) > (is an actual
+        join key) > (first declared). If 2+ colliding members are BOTH referenced,
+        raise (the engine won't guess -- add column_overrides). Preferring the join
+        key on a tie ensures the physical column the ON-clause needs survives.
+
+    `referenced_locals` is the set of worksheet-referenced local field names for
+    this datasource (see collect_referenced_locals); None disables the drop path
+    (treats nothing as referenced). `join_operands` is the set of (relation, field)
+    pairs on join ON-clauses (see join_key_operands), used only for tie-breaking.
+    Drops/collisions are recorded on `report` (a dict) when provided."""
     casing = ds_cfg.get('casing', 'upper')
+    overrides = ds_cfg.get('column_overrides', {}) or {}
+    referenced_locals = referenced_locals or set()
+    join_operands = join_operands or set()
     conn = ds.find('connection')
     mrs = conn.find('metadata-records') if conn is not None else None
-    bindings = []
+
+    def phys_for(remote, local):
+        # config override may key on the original remote-name or the local field name
+        if remote in overrides:
+            return overrides[remote]
+        if local in overrides:
+            return overrides[local]
+        return apply_casing(remote, casing)
+
+    base = []
     if mrs is not None:
         for rec in mrs.findall('metadata-record'):
             if rec.get('class') != 'column':
@@ -202,12 +236,48 @@ def derive_bindings(ds, ds_cfg):
             ltype = rec.findtext('local-type', 'string')
             if not remote or not local:
                 continue
-            bindings.append({
-                'remote_name': apply_casing(remote, casing),
+            # parent-name is [Relation]; strip brackets to match join operands
+            parent = (rec.findtext('parent-name') or '').strip('[]')
+            base.append({
+                'remote_name': phys_for(remote, local),
                 'local_name': local,
                 'local_type': ltype,
                 'is_calc': False,
+                'is_join_key': (parent, remote) in join_operands,
             })
+
+    # resolve physical-name collisions among base bindings (order preserved)
+    by_phys = defaultdict(list)
+    for b in base:
+        by_phys[b['remote_name']].append(b)
+    dropped = set()
+    for phys, members in by_phys.items():
+        if len(members) < 2:
+            continue
+        referenced = [m for m in members if m['local_name'] in referenced_locals]
+        if len(referenced) >= 2:
+            names = ', '.join(m['local_name'] for m in referenced)
+            raise RuntimeError(
+                f"{ds.get('name')}: {len(referenced)} worksheet-referenced fields "
+                f"collide on physical column {phys!r} ({names}). The gold view exposes "
+                f"one column per name, so the engine cannot fold these safely. Add a "
+                f"per-datasource \"column_overrides\" mapping to give them distinct gold "
+                f"columns (and expose both in the view).")
+        # keep best member: referenced > join key > first declared; drop the rest
+        if referenced:
+            keep = referenced[0]
+        else:
+            keep = next((m for m in members if m['is_join_key']), members[0])
+        for m in members:
+            if m is not keep:
+                dropped.add(id(m))
+                if report is not None:
+                    report.setdefault('collisions_dropped', []).append(
+                        {'physical': phys, 'dropped_local': m['local_name'],
+                         'kept_local': keep['local_name']})
+
+    bindings = [b for b in base if id(b) not in dropped]
+
     for entry in ds_cfg.get('calc_bindings', []):
         gold_col, calc_id = entry[0], entry[1]
         ltype = entry[2] if len(entry) > 2 else 'string'
@@ -314,6 +384,53 @@ def _relation_leaves(rel):
         yield rel
 
 
+def collect_referenced_locals(root, fed_name):
+    """Set of local field names ([field]) that any worksheet references for this
+    datasource (via <datasource-dependencies> <column>/<column-instance>). Used to
+    decide which side of a physical-name collision is safe to drop."""
+    referenced = set()
+    for ws in root.findall('.//worksheet'):
+        for dd in ws.findall('.//datasource-dependencies'):
+            if dd.get('datasource') != fed_name:
+                continue
+            for col in dd.findall('column'):
+                if col.get('name'):
+                    referenced.add(col.get('name'))
+            for ci in dd.findall('column-instance'):
+                if ci.get('column'):
+                    referenced.add(ci.get('column'))
+    return referenced
+
+
+# join-clause operands are relation-qualified refs like [Rel Name].[field]; the
+# columns named on either side of a join are the "join keys" duplicated across the
+# flattened view. We surface them so the notes can warn that the gold view keeps
+# them intentionally duplicated (dedup on promotion breaks the production swap), and
+# use the (relation, field) pairs to break physical-name-collision ties toward the
+# actual join key (its physical column must survive).
+_QUALIFIED_REF = re.compile(r'\[([^\]]+)\]\.\[([^\]]+)\]')
+
+
+def join_key_operands(top_rel):
+    """Set of (relation_name, field_name) pairs referenced in any join <clause>
+    under a relation subtree -- the Tableau-side join keys, as written (uncased,
+    unbracketed). These match a metadata-record via (parent-name, remote-name)."""
+    ops = set()
+    if top_rel is None:
+        return ops
+    for rel in top_rel.iter('relation'):
+        if rel.get('type') != 'join':
+            continue
+        clause = rel.find('clause')
+        if clause is None:
+            continue
+        for expr in clause.iter('expression'):
+            op = expr.get('op') or ''
+            for relname, field in _QUALIFIED_REF.findall(op):
+                ops.add((relname, field))
+    return ops
+
+
 def _collapse_join_to_table(parent, conn_name, name, sf_table):
     """If `parent` has a child join/union <relation> subtree, replace it in place
     with a single <relation type="table"> pointing at the gold view. Returns True
@@ -332,20 +449,32 @@ def _collapse_join_to_table(parent, conn_name, name, sf_table):
 
 
 # ---- core transform ----------------------------------------------------------
-def transform_datasource(ds, ds_cfg, conn_cfg, templates, report):
+def transform_datasource(ds, ds_cfg, conn_cfg, templates, report, root):
     fed_name = ds.get('name')
     view = ds_cfg['view']
+    casing = ds_cfg.get('casing', 'upper')
     sf_table = f"[{conn_cfg['dbname']}].[{conn_cfg['schema']}].[{view}]"
     conn = ds.find('connection')
 
-    bindings = derive_bindings(ds, ds_cfg)
-
-    # detect a join/union datasource and enforce the all-SQL contract. A flattened
-    # gold view is built from SQL only, so a non-SQL leaf (Google Drive/Excel sheet,
-    # published extract, ...) cannot be folded into it. The standard engine refuses
-    # rather than silently dropping those columns.
+    # join keys inform both the "intentional duplication" warning and the collision
+    # tie-break (prefer keeping the join-key column). Read them BEFORE the collapse
+    # mutates the relation tree.
     top_rel = conn.find('relation')
     is_join = top_rel is not None and top_rel.get('type') in ('join', 'union')
+    join_ops = join_key_operands(top_rel) if is_join else set()
+    join_keys = sorted({apply_casing(f, casing) for _r, f in join_ops})
+
+    # worksheet-referenced fields decide which side of a physical-name collision is
+    # safe to drop.
+    referenced = collect_referenced_locals(root, fed_name)
+    ds_report = {}
+    bindings = derive_bindings(ds, ds_cfg, referenced_locals=referenced,
+                               join_operands=join_ops, report=ds_report)
+
+    # enforce the all-SQL contract for a joined datasource. A flattened gold view is
+    # built from SQL only, so a non-SQL leaf (Google Drive/Excel sheet, published
+    # extract, ...) cannot be folded into it. The standard engine refuses rather than
+    # silently dropping those columns.
     if is_join:
         non_sql = [l for l in _relation_leaves(top_rel) if l.get('type') != 'text']
         if non_sql:
@@ -425,6 +554,25 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report):
         mrs.append(make_record(templates, i, b['remote_name'], b['local_name'],
                                b['local_type'], parent_name))
 
+    # (3b) a federated (joined) datasource carries a <connection>/<cols> map whose
+    # values are relation-qualified physical columns ([Rel].[col]) pointing at the
+    # pre-collapse relations. After collapsing to one view those relation names no
+    # longer exist, so every entry must be regenerated to point at the gold view:
+    # key (local field, unchanged) -> [VIEW].[physical]. Single-relation datasources
+    # have no <cols> map and this is a no-op. Kept consistent with the metadata-
+    # records above (cols key == local-name; cols physical == remote-name).
+    cols = conn.find('cols')
+    cols_rewritten = 0
+    if cols is not None:
+        for r in list(cols):
+            cols.remove(r)
+        # Tableau orders the cols map by key (ASCII); match that for a stable diff.
+        for b in sorted(bindings, key=lambda x: x['local_name']):
+            m = ET.SubElement(cols, 'map')
+            m.set('key', b['local_name'])
+            m.set('value', f'[{view}].[{b["remote_name"]}]')
+            cols_rewritten += 1
+
     # (4) neutralize materialized calcs at datasource level
     calc_ids = {b['local_name'] for b in bindings if b['is_calc']}
     calcs_neutralized = []
@@ -472,6 +620,10 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report):
         'extracts_removed': extracts_removed,
         'extract_props_removed': extract_props_removed,
         'calc_ids': calc_ids,
+        'is_join': is_join,
+        'cols_rewritten': cols_rewritten,
+        'join_keys': join_keys,
+        'collisions_dropped': ds_report.get('collisions_dropped', []),
     })
 
 
@@ -527,7 +679,7 @@ def reconstruct(input_twbx, config, output_twbx, template_twbx=None, verbose=Tru
     drill_before = {}
     for ds, ds_cfg in matched:
         drill_before[ds.get('name')] = count_drill_paths(ds)
-        transform_datasource(ds, ds_cfg, conn_cfg, templates, report)
+        transform_datasource(ds, ds_cfg, conn_cfg, templates, report, root)
 
     for r in report:
         r['ws_calc_copies_stripped'] = (
@@ -572,6 +724,14 @@ def _print_report(report, dropped, out_twbx):
         print(f"  relation   : text SQL -> table {r['sf_table']}  (name kept: {r['relation_name']}, {r['relations_converted']} relation(s))")
         print(f"  casing     : {r['casing']}")
         print(f"  metadata   : {r['metadata_records_before']} -> {r['metadata_records_after']} ({r['base_records']} base + {r['calc_records']} calc)")
+        if r.get('is_join'):
+            print(f"  cols map   : {r['cols_rewritten']} entry(ies) repointed to [{r['view']}]")
+        for c in r.get('collisions_dropped', []):
+            print(f"  collision  : dropped {c['dropped_local']} (unreferenced) -> "
+                  f"kept {c['kept_local']} for physical [{c['physical']}]")
+        if r.get('join_keys'):
+            print(f"  join keys  : {r['join_keys']}  (intentionally duplicated in view; "
+                  f"do NOT dedup in Gold)")
         print(f"  calcs neutralized ({len(r['calcs_neutralized'])}): {r['calcs_neutralized']}")
         print(f"  worksheet calc-copies neutralized: {r.get('ws_calc_copies_stripped', 0)}")
         print(f"  extract removed: {r['extracts_removed']} element(s), {r['extract_props_removed']} object-graph relation(s)")
@@ -595,7 +755,40 @@ def write_notes(result, notes_path, drill_label=None):
         lines.append(f'- Calc fields neutralized: {len(r["calcs_neutralized"])} datasource-level + {r.get("ws_calc_copies_stripped", 0)} worksheet copies')
         for c in r['calcs_neutralized']:
             lines.append(f'    - `{c}`')
+        if r.get('is_join'):
+            lines.append(f'- Joined datasource collapsed into one view; `{r["cols_rewritten"]}` '
+                         f'`<cols>` map entries repointed to `[{r["view"]}]`.')
+        for c in r.get('collisions_dropped', []):
+            lines.append(f'- Physical-name collision on `{c["physical"]}`: dropped '
+                         f'unreferenced field `{c["dropped_local"]}`, kept '
+                         f'`{c["kept_local"]}`.')
         lines.append('')
+
+    # join-collapse Gold warning: a field used as a Tableau-side join key is
+    # intentionally duplicated across the flattened view (both sides of the ON
+    # clause survive as distinct physical columns). Deduplicating them when the
+    # view is promoted to Gold would break the downstream production swap, whose
+    # rebind matches physical column names 1:1.
+    join_ds = [r for r in report if r.get('is_join') and r.get('join_keys')]
+    if join_ds:
+        lines.append('## WARNING - join-key duplication: do NOT deduplicate in Gold\n')
+        lines.append('One or more datasources were collapsed from a Tableau-side JOIN into a '
+                     'single flattened view. The column(s) used as join keys appear on BOTH '
+                     'sides of the join and are therefore **intentionally duplicated** in the '
+                     'view as distinct physical columns. This duplication is load-bearing:\n')
+        lines.append('- The workbook binds each side to its own internal field, so both '
+                     'physical columns must exist.')
+        lines.append('- The later **production swap** repoints the view to a Gold table by '
+                     'matching physical column names 1:1. If the Gold table drops or merges '
+                     'the duplicated join-key column, that rebind breaks.\n')
+        lines.append('**When you promote this SANDBOX view to Gold, keep every duplicated '
+                     'join-key column exactly as the view exposes it - do not `SELECT DISTINCT` '
+                     'them away or collapse them into one.**\n')
+        for r in join_ds:
+            lines.append(f'- `{r["caption"]}` (view `{r["view"]}`) - join-key columns: '
+                         + ', '.join(f'`{k}`' for k in r['join_keys']))
+        lines.append('')
+
     lines.append('## Extract files dropped (now a live Snowflake connection)\n')
     for d in dropped:
         lines.append(f'- `{d}`')
