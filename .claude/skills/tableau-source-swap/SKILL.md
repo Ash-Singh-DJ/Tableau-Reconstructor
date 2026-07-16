@@ -141,6 +141,17 @@ and a `COUNT(*)` smoke test (the helper prints both via `--fqn`). Run these in t
 background (OAuth latency). Record the column names + types — Phase 4 needs them for
 `casing` and the calc binding types.
 
+**Optional back-end logic test.** Before rewriting the workbook, you can validate that
+each new gold view returns the *same data* as the Athena logic it replaced — not just
+that its columns line up. Invoke the **`logic_test`** skill (`/logic_test`): it runs the
+original Athena SQL and the `RECONSTRUCTOR_` view and compares row counts, null rates,
+aggregates, and (optionally) rows, tracing any discrepancy to its source tables. If the
+deltas are large, **pause** and fix the translation before Phase 4; if they're small or
+explained, **continue** — the swapped workbook reads the SANDBOX view live and just
+refreshes if the view later changes (as long as its column structure holds). This gate is
+optional and skippable when the Athena source is deprecated/broken (the logic test reports
+that as BLOCKED).
+
 ## Phase 4 — Rewrite the workbook connections
 
 Fill in the config skeleton from Phase 1 and run the reconstructor. The config maps

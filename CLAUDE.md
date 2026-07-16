@@ -6,14 +6,14 @@ production tables. It is a distilled, standalone extraction of the dashboard-
 migration tooling built in the B2B `Presto-to-ANSI` project, packaged so any team
 member can run the same workflow without that project's wider baggage.
 
-Both skills operate on **workbooks (`.twbx`)** and **standalone data sources
+All three skills operate on **workbooks (`.twbx`)** and **standalone data sources
 (`.tdsx`)** interchangeably — same workflow, same commands, output keeps the input's
 extension. A `.twbx` bundles a `.twb` (root `<workbook>`, many datasources,
 worksheets); a `.tdsx` bundles a `.tds` whose root *is* a single `<datasource>` (no
 worksheets, identified by `formatted-name`). The format seam is centralized in
 `reconstructor/tableau_doc.py`; everything else is shared.
 
-Two Claude **skills** drive the work end-to-end (see `.claude/skills/`):
+Three Claude **skills** drive the work end-to-end (see `.claude/skills/`):
 
 1. **`tableau-source-swap`** — Athena → Snowflake. Extract each datasource's Custom
    SQL + calc fields, translate to Snowflake, deploy as a gold view, then rewrite
@@ -22,6 +22,12 @@ Two Claude **skills** drive the work end-to-end (see `.claude/skills/`):
 2. **`production-swap`** — Snowflake → Snowflake. Repoint an already-Snowflake-backed
    workbook from one table (e.g. a `SANDBOX` view) to a final production table
    (`B2B_GOLD` or another prod schema). No dialect change; a surgical table repoint.
+3. **`logic_test`** — back-end validation. Run the ORIGINAL Athena logic and the
+   `RECONSTRUCTOR_` Snowflake view and compare results (row counts, schema, null
+   rates, aggregates, optional row-level diff), tracing discrepancies to their source
+   tables. Optional gate after source-swap Phase 2/3, or standalone against a view a
+   teammate already published. Reports; doesn't fix unless the translation bug is
+   obvious or the user asks.
 
 ## Repo layout
 
@@ -38,10 +44,12 @@ Tableau-Reconstructor/
 │   ├── extract_field_metadata.py       # captions / calc formulas / SQL-col maps → CSV
 │   ├── verify_output.py        #   static, config-driven verification of a swap
 │   ├── tableau_doc.py          #   format-agnostic .twbx/.tdsx IO shared by all engines
-│   └── deploy_view.py          #   deploy a gold view + smoke test (uses connectors)
-├── .claude/skills/             # the two orchestration skills
+│   ├── deploy_view.py          #   deploy a gold view + smoke test (uses connectors)
+│   └── logic_test.py           #   Athena-vs-Snowflake logic comparison (uses connectors)
+├── .claude/skills/             # the three orchestration skills
 │   ├── tableau-source-swap/SKILL.md
-│   └── production-swap/SKILL.md
+│   ├── production-swap/SKILL.md
+│   └── logic_test/SKILL.md
 ├── table_mappings.csv          # approved Athena ↔ Snowflake table mappings (shared)
 ├── Inputs/                     # source .twbx/.twb workbooks and .tdsx/.tds data sources
 ├── Outputs/                    # per-workbook outputs (gold SQL, swapped .twbx/.tdsx, notes)
@@ -52,8 +60,8 @@ Tableau-Reconstructor/
 
 **Key design point:** the swap engines (`reconstructor/`) are **pure Python standard
 library** (`zipfile`, `xml.etree`, `json`, `re`, `csv`) — they never touch a
-database. Only `deploy_view.py` and any discovery scripts query Snowflake, and they
-do so through the standalone **`connectors`** package:
+database. Only `deploy_view.py`, `logic_test.py`, and any discovery scripts query the
+databases, and they do so through the standalone **`connectors`** package:
 
 ```python
 from connectors import execute_athena_query, execute_snowflake_query
