@@ -27,3 +27,7 @@ post_channel,CHANNEL
 visit_num,visit_num
 visit_start_time_gmt,visit_start_time_gmt
 geo_country,geo_country
+post_referrer,full_url
+post_prop72,POST_PROP72
+post_pagename,post_page_name
+ip,ip

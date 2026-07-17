@@ -17,8 +17,19 @@ Three Claude **skills** drive the work end-to-end (see `.claude/skills/`):
 
 1. **`tableau-source-swap`** — Athena → Snowflake. Extract each datasource's Custom
    SQL + calc fields, translate to Snowflake, deploy as a gold view, then rewrite
-   the workbook's connections to Snowflake while preserving every caption, drill-
-   down hierarchy, and calculated field. Produces a Snowflake-backed `.twbx`.
+   the connections to Snowflake while preserving every caption, drill-down hierarchy,
+   and calculated field. Handles three input shapes with the same translate-and-deploy
+   core:
+   - **Embedded-connection `.twbx`** — a workbook whose datasources embed their own
+     Athena connection. Swapped in place → Snowflake-backed `.twbx` (`reconstruct.py`).
+   - **Standalone `.tdsx`** — a single published/exported data source (root *is* the
+     `<datasource>`). Same swap, output keeps the `.tdsx` extension (`reconstruct.py`).
+   - **Published (`sqlproxy`) `.twbx` + side-car `.tdsx`** — a workbook whose
+     datasources are *references* to published sources on Tableau Server, shipped
+     alongside the `.tdsx` for each. The workbook holds no Athena SQL; the side-cars
+     do. Swap each side-car, then embed it back into the workbook in place of its
+     reference → one self-contained Snowflake-backed `.twbx` (`embed_collapse.py`,
+     which reuses `reconstruct.py`).
 2. **`production-swap`** — Snowflake → Snowflake. Repoint an already-Snowflake-backed
    workbook from one table (e.g. a `SANDBOX` view) to a final production table
    (`B2B_GOLD` or another prod schema). No dialect change; a surgical table repoint.
@@ -38,6 +49,8 @@ Tableau-Reconstructor/
 │   └── db.py                   #   execute_athena_query / execute_snowflake_query
 ├── reconstructor/              # the swap engines + extraction tools (pure stdlib)
 │   ├── reconstruct.py          #   Athena→Snowflake source swap (config-driven)
+│   ├── embed_collapse.py       #   collapse a published (sqlproxy) .twbx + side-car
+│   │                           #     .tdsx into ONE embedded Snowflake-backed .twbx
 │   ├── production_swap.py      #   Snowflake→Snowflake table repoint
 │   ├── extract_custom_sql.py           # base Custom SQL per datasource
 │   ├── extract_custom_sql_advanced.py  # base + translatable calc fields as columns

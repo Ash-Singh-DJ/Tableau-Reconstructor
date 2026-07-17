@@ -27,6 +27,18 @@ rather than a caption). The engines handle both transparently — pass either pa
 and the output keeps the input's extension. Everything below applies to both; just
 substitute `.tdsx` for `.twbx` in the paths.
 
+**Third topology — a `.twbx` of published (`sqlproxy`) datasources + side-car
+`.tdsx` files.** Some workbooks don't embed their Athena connection at all: their
+data datasources are `class="sqlproxy"` *references* to published data sources on
+Tableau Server, and the real Athena Custom SQL lives in a separate `.tdsx` per
+published source (exported alongside the `.twbx`). Such a `.twbx` has **no Athena
+SQL inside it**, so the standard swap (Phase 4) would refuse it. The **embed-collapse**
+path (Phase 5) handles this: source-swap each side-car `.tdsx` normally, then embed
+the swapped datasource back into the workbook in place of its `sqlproxy` reference,
+producing a single self-contained Snowflake-backed `.twbx`. If you open a workbook
+and Phase 1's `--emit-config` shows no SQL datasources but you were handed `.tdsx`
+files too, you're in this case — jump to Phase 5.
+
 ## Prerequisites & environment
 
 - Python 3.9+ (`python`). Install deps once: `pip install -r requirements.txt`.
@@ -236,6 +248,88 @@ ref under an *untouched* datasource (e.g. a Google-Drive Glossary) is fine — j
 confirm it's not in a target. (For a `.tdsx` there are no worksheets, so the
 worksheet-collision check is trivially 0 — that's expected, not a gap.)
 
+## Phase 5 — Embed-collapse (published `sqlproxy` `.twbx` + side-car `.tdsx`)
+
+Use this INSTEAD of Phase 4 when the workbook's data datasources are `class="sqlproxy"`
+references to published sources and you were handed the `.tdsx` for each. The engine
+is `reconstructor/embed_collapse.py`; it **reuses** `reconstruct.py` per side-car
+(no dialect logic is duplicated) and never touches a database itself. The result is
+one self-contained `.twbx` with the data sources **embedded** and Snowflake-backed.
+
+**How it works.** For each `sqlproxy` datasource the engine (1) source-swaps its
+side-car `.tdsx` to Snowflake with the standard engine, (2) verifies the pairing
+with a field fingerprint, then (3) *grafts* the swapped physical layer
+(`<connection>` + `<object-graph>` + metadata-records) onto the workbook's datasource
+in place, **keeping its federated `name`** (`sqlproxy.xxxxx`) so every worksheet
+binding and calc alias stays valid with zero worksheet rewrites. It strips the
+datasource's `<repository-location>` and drops the now-orphaned local extracts.
+
+**Step 5a — Inventory the published datasources.**
+
+```bash
+"$PY" reconstructor/embed_collapse.py "Inputs/<workbook>.twbx" --inventory
+```
+
+This lists each `sqlproxy` datasource with its `repository_id`, calc-field ids, and
+worksheet-referenced base columns — the fingerprint you use to match it to a `.tdsx`.
+
+**Step 5b — Match each `sqlproxy` datasource to its side-car `.tdsx`.** Filenames
+rarely match the datasource caption exactly but are usually fuzzy-similar; the
+`repository-location/@id` is often shared verbatim between the proxy and its `.tds`
+(strongest signal). Resolve the pairing by id/caption similarity and **get user
+sign-off** before proceeding. You don't have to get it perfect — the engine
+*verifies* every pairing with a field fingerprint (calc-id sets must match exactly;
+every referenced base column must exist in the `.tdsx`) and **hard-stops** on a
+mismatch, so a wrong guess fails loudly rather than silently.
+
+**Step 5c — Translate + deploy each side-car's gold view.** Each `.tdsx` is a normal
+Athena source: run Phases 1–3 on it (extract → translate per `CLAUDE.md` → deploy
+`RECONSTRUCTOR_<NAME>` to `SANDBOX.B2B`). A side-car whose datasource JOINs several
+Custom SQL relations is flattened into one gold view exactly as in Phase 1's
+joined-datasource rules (carry the join-key-duplication warning forward).
+
+**Step 5d — Write the config and collapse.** The config is the Phase 4 config plus a
+`"tdsx"` path per datasource; `calc_bindings` is normally **empty** — in collapse
+mode the calcs stay as Tableau calcs in the workbook (the logical layer is
+preserved), so each gold view need only expose the **base** columns.
+
+```json
+{
+  "connection": { "server": "...", "dbname": "SANDBOX", "schema": "B2B",
+                  "warehouse": "B2B_S_WH", "role": "B2B_ANALYST_PRIVILEGED",
+                  "authentication": "oauth" },
+  "datasources": [
+    { "match": "<sqlproxy datasource caption>",
+      "tdsx":  "Inputs/<side-car>.tdsx",
+      "view":  "RECONSTRUCTOR_<NAME>",
+      "casing": "upper", "calc_bindings": [] }
+  ]
+}
+```
+
+```bash
+"$PY" reconstructor/embed_collapse.py "Inputs/<workbook>.twbx" \
+    --config "Outputs/<Workbook>/collapse_config.json" \
+    -o "Outputs/<Workbook>/Collapsed/<workbook> - Collapsed.twbx"
+```
+
+**Step 5e — Statically verify.** Same engine, `--verify` mode, same config:
+
+```bash
+"$PY" reconstructor/embed_collapse.py \
+    "Outputs/<Workbook>/Collapsed/<workbook> - Collapsed.twbx" \
+    --config "Outputs/<Workbook>/collapse_config.json" --verify
+```
+
+It confirms, per collapsed datasource: connection class is now `federated` with a
+`snowflake` inner class; **no datasource-level `<repository-location>`** and no
+`[sqlproxy]` stub relation remain; relations point at the gold view; and the
+**resolution invariant** — every worksheet-referenced field resolves to a
+metadata-record or a kept calc. Globally: 0 `.hyper`, 0 orphaned `Data/Extracts/`,
+0 `athena`. (Workbook/dashboard-level `<repository-location>` — where the *workbook*
+was published — is unrelated to the data swap and intentionally left alone.) Then do
+the Phase-5 → Output handoff below (the Tableau open test still applies).
+
 ## Output & handoff
 
 The produced file connects **live** to Snowflake (extracts are stripped; offline
@@ -267,5 +361,8 @@ pending the user.
 
 - `reconstructor/reconstruct.py` — the engine this skill drives (config-driven).
 - `reconstructor/verify_output.py` — static verifier (config-driven; pass `--input`).
+- `reconstructor/embed_collapse.py` — Phase 5 embed-collapse engine for published
+  (`sqlproxy`) `.twbx` + side-car `.tdsx`; reuses `reconstruct.py`. Modes:
+  `--inventory`, build (`--config -o`), and `--verify`.
 - `reconstructor/deploy_view.py` — deploy a gold view + column dump (uses connectors).
 - `CLAUDE.md` — translation rules, code style, mappings, naming.
