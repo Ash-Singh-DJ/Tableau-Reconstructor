@@ -524,14 +524,20 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report, root):
             if el.get('connection') == old_conn_name:
                 el.set('connection', new_conn_name)
     else:
-        # single-relation datasource: repoint connection refs + convert the text
-        # relation(s) to a table relation in place (preserving the relation name).
+        # single-relation datasource: repoint connection refs + point the relation(s)
+        # at the gold view, preserving the relation name. Two source shapes occur:
+        #   type="text"  -- a Custom SQL relation (the common case): convert to a
+        #                   table relation, dropping the now-obsolete SQL body.
+        #   type="table" -- the datasource was a direct table pick (no Custom SQL), so
+        #                   the relation already carries the SOURCE table; its `table`
+        #                   attribute must still be repointed at the gold view or the
+        #                   swapped datasource keeps querying the source database.
         relation_name = None
         relations_converted = 0
         for el in ds.iter():
             if el.get('connection') == old_conn_name:
                 el.set('connection', new_conn_name)
-            if el.tag == 'relation' and el.get('type') == 'text':
+            if el.tag == 'relation' and el.get('type') in ('text', 'table'):
                 if relation_name is None:
                     relation_name = el.get('name')
                 el.set('type', 'table')

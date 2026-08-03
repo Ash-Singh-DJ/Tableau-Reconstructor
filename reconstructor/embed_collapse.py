@@ -94,6 +94,17 @@ EXTRACT_PREFIX = 'Data/Extracts/'   # local extract shadow files (may lack .hype
 PHYSICAL_ONLY_CALC_ATTRS = ('pivot', 'user-datatype', 'default-type', 'layered',
                             'visual-totals', 'aggregation')
 
+# Worksheet field references that are NOT database columns and so never appear in a
+# connection's metadata-records. They must be excluded from the "referenced base
+# column" set, or the pairing guardrail reports them as missing from the gold view
+# and refuses a perfectly valid collapse:
+#   [__tableau_internal_object_id__].[<id>] -- the relation's object identity, which
+#       resolves through <object-graph> (the graft carries the .tds's object-graph,
+#       whose object id matches the proxy's, so these stay valid).
+#   [:<name>]  e.g. [:Measure Names] -- Tableau-generated pseudo-fields.
+def _is_pseudo_field(name):
+    return ('__tableau_internal_object_id__' in name) or name.startswith('[:')
+
 
 # ---- introspection -----------------------------------------------------------
 def _conn_local_names(ds):
@@ -118,7 +129,8 @@ def _calc_col_names(ds):
 
 
 def _referenced_locals(root, fed_name):
-    """Every [field] any worksheet references for this datasource."""
+    """Every [field] any worksheet references for this datasource, excluding
+    pseudo-fields that don't resolve via metadata-records (see _is_pseudo_field)."""
     refs = set()
     for ws in root.findall('.//worksheet'):
         for dd in ws.findall('.//datasource-dependencies'):
@@ -130,7 +142,7 @@ def _referenced_locals(root, fed_name):
             for ci in dd.findall('column-instance'):
                 if ci.get('column'):
                     refs.add(ci.get('column'))
-    return refs
+    return {r for r in refs if not _is_pseudo_field(r)}
 
 
 def _repository_id(ds):
