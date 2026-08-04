@@ -99,6 +99,16 @@ def _is_numeric_sf_type(data_type):
     return any(t in (data_type or '').upper() for t in _NUMERIC_SF_TYPES)
 
 
+def _numeric_sample_cols(sample):
+    """Numeric columns of a sample frame, EXCLUDING booleans. pandas reports a bool
+    dtype as numeric, but Presto/Snowflake refuse `SUM(boolean)` -- so a boolean
+    passthrough column (e.g. `individual`, `corporation` in the SAP sheet) would
+    make the whole aggregate query fail with FUNCTION_NOT_FOUND."""
+    import pandas.api.types as pdt
+    return [c for c in sample.columns
+            if pdt.is_numeric_dtype(sample[c]) and not pdt.is_bool_dtype(sample[c])]
+
+
 # ── config: which SF columns are materialized calcs / explicitly renamed ──────
 def load_expected_calc_and_overrides(config_path, match):
     """From the reconstruct config, return (calc_sf_cols, override_pairs) for the
@@ -453,8 +463,7 @@ def run(athena_sql, sf_from, sf_fqn=None, config=None, match=None, keys=None,
         return result
 
     athena_cols = list(a_sample.columns)
-    import pandas.api.types as pdt
-    athena_numeric = [c for c in athena_cols if pdt.is_numeric_dtype(a_sample[c])]
+    athena_numeric = _numeric_sample_cols(a_sample)
     result['athena_sample'] = a_sample.head(5).astype(str).to_dict(orient='records')
 
     # 2) Snowflake columns + types + sample
@@ -464,7 +473,7 @@ def run(athena_sql, sf_from, sf_fqn=None, config=None, match=None, keys=None,
     if not sf_cols:  # e.g. --sf-sql (not deployed): fall back to a sample for names
         s_sample0 = snowflake_sample(sf_from)
         sf_cols = list(s_sample0.columns)
-        sf_numeric = [c for c in sf_cols if pdt.is_numeric_dtype(s_sample0[c])]
+        sf_numeric = _numeric_sample_cols(s_sample0)
         result['snowflake_sample'] = s_sample0.head(5).astype(str).to_dict(orient='records')
     else:
         s_sample = snowflake_sample(sf_from)

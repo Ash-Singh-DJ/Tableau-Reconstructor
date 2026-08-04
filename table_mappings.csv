@@ -44,7 +44,7 @@ dimension_external_db,risk_and_compliance_accounts_current,B2B_SILVER,RISK_AND_C
 dimension_external_db,pib_product_service_attributes,B2B_SILVER,SALESFORCE,PRODUCT_SERVICE_ATTRIBUTES_CURRENT,4/16/2026,PIB product service attributes
 pib_event_data,pib_product_metrics,B2B_SILVER,PRODUCT_METRICS,FCT_PRODUCT_METRICS_PUBLIC_VW,6/10/2026,Joins PIB_MEMBERSHIP_CURRENT on EID
 dimension_external_db,pib_membership_dimension,B2B_SILVER,MEMBERSHIP,PIB_MEMBERSHIP_CURRENT,6/10/2026,PIB membership dimension current; pib_member_id->EID
-reference_external_db,pib_product_dimension,B2B_SILVER,PRODUCT_DIMENSION,PRODUCT_DIMENSION,6/10/2026,PIB product dimension
+reference_external_db,pib_product_dimension,B2B_SILVER,PRODUCT_DIMENSION,PRODUCT_DIMENSION,6/10/2026,"PIB product dimension. DRIFT: ACCESS_CODE lost its leading zeros in Snowflake (Athena '0419' -> SF '419'); only 591 of 1017 codes are still 4 chars. mem.plan_id on PIB_MEMBERSHIP_CURRENT is STILL zero-padded, so any join on mem.plan_id = pd.access_code must use LPAD(pd.access_code, 4, '0') -- raw join silently matches only 591/1017 codes and drops BU='R&C' entirely. LPAD is set-exact vs Athena (1017=1017, no collisions; the 13 non-numeric codes like WSJC/SLF2 are already 4 chars)."
 dimension_external_db,pib_contact_dimension,B2B_SILVER,SALESFORCE,CONTACT_CURRENT,6/10/2026,PIB contact dimension current; contact_sfdc_id->ID
 fact_external_db,pib_membership_fact,B2B_SILVER,MEMBERSHIP,MEMBERSHIP_FACT,6/10/2026,PIB membership fact; pib_member_id joins to EID in PIB_MEMBERSHIP_CURRENT
 dimension_external_db,pib_leads_dimension,B2B_SILVER,SALESFORCE,LEADS_CURRENT,6/10/2026,PIB leads dimension current; lead_sfdc_id->LEAD_SFDC_ID
