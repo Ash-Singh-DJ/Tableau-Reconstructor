@@ -66,6 +66,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
@@ -243,6 +244,7 @@ def swap_datasource(ds, ds_cfg, conn_overrides, report):
 
     # (3) optional remote-name remap for prod-renamed columns
     cols_remapped = []
+    cols_map_remapped = []
     if column_map:
         conn = ds.find('connection')
         mrs = conn.find('metadata-records') if conn is not None else None
@@ -259,6 +261,33 @@ def swap_datasource(ds, ds_cfg, conn_overrides, report):
                     if ra_el is not None:
                         ra_el.text = new
 
+        # The federated <connection>/<cols> map binds each Tableau field to its
+        # PHYSICAL column: [content_type] -> [Custom SQL Query].[CONTENT_TYPE].
+        # Rewriting only the metadata-records leaves this map pointing at a column
+        # that no longer exists in the prod table -> Tableau cannot resolve the
+        # field ("broken binding"). Rewrite the relation-qualified value's column
+        # part in place, keeping the key (the workbook's internal field name) and
+        # the relation qualifier untouched.
+        #
+        # ONLY the federated connection's map is rewritten. The extract's
+        # <connection class='hyper'>/<cols> map (values qualified [Extract].[...])
+        # describes the local .hyper's own schema, which still carries the OLD
+        # column names until the user refreshes the extract -- rewriting it would
+        # desync the map from the extract file it describes.
+        if conn is not None:
+            cols_el = conn.find('cols')
+            if cols_el is not None:
+                for mp in cols_el.findall('map'):
+                    val = mp.get('value') or ''
+                    m = re.match(r'^(.*)\[([^\[\]]+)\]$', val)
+                    if not m:
+                        continue
+                    prefix, phys = m.group(1), m.group(2)
+                    if phys in column_map:
+                        new_val = f'{prefix}[{column_map[phys]}]'
+                        mp.set('value', new_val)
+                        cols_map_remapped.append((val, new_val))
+
     report.append({
         'datasource': fed_name,
         'caption': ds_label(ds),
@@ -270,6 +299,7 @@ def swap_datasource(ds, ds_cfg, conn_overrides, report):
         'relations_repointed': relations_repointed,
         'relations_skipped': relations_skipped,
         'columns_remapped': cols_remapped,
+        'cols_map_remapped': cols_map_remapped,
         'conn_overrides': {k: v for k, v in conn_overrides.items()},
     })
 
@@ -353,6 +383,14 @@ def _print_report(result):
             print(f"  columns remapped ({len(r['columns_remapped'])}):")
             for o, n in r['columns_remapped']:
                 print(f"    - {o} -> {n}")
+        if r.get('cols_map_remapped'):
+            print(f"  federated <cols> map entries rewritten "
+                  f"({len(r['cols_map_remapped'])}):")
+            for o, n in r['cols_map_remapped']:
+                print(f"    - {o} -> {n}")
+        elif r['columns_remapped']:
+            print("  WARNING: columns were remapped but NO federated <cols> map entry "
+                  "was rewritten -- field bindings may break. Inspect the datasource.")
         v = result['validations'].get(r['match'])
         if v:
             print(f"  validation: {v['bound_count']} bound cols all present in target "
@@ -378,6 +416,14 @@ def write_notes(result, notes_path):
         if r['columns_remapped']:
             lines.append(f'- Columns remapped (prod renames): {len(r["columns_remapped"])}')
             for o, n in r['columns_remapped']:
+                lines.append(f'    - `{o}` -> `{n}`')
+        if r.get('cols_map_remapped'):
+            lines.append(f'- Federated `<cols>` map entries rewritten to the new physical '
+                         f'names: {len(r["cols_map_remapped"])} (the extract\'s own '
+                         f'`[Extract].[...]` map is intentionally left alone -- it '
+                         f'describes the local `.hyper`, which still holds the old '
+                         f'column names until refreshed)')
+            for o, n in r['cols_map_remapped']:
                 lines.append(f'    - `{o}` -> `{n}`')
         v = result['validations'].get(r['match'])
         if v:
