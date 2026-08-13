@@ -27,3 +27,7 @@ post_channel,CHANNEL
 visit_num,visit_num
 visit_start_time_gmt,visit_start_time_gmt
 geo_country,geo_country
+post_prop40,newsletter_name
+post_prop6,full_url
+post_campaign,post_campaign
+date_time,date_time
