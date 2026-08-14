@@ -31,3 +31,7 @@ post_prop40,newsletter_name
 post_prop6,full_url
 post_campaign,post_campaign
 date_time,date_time
+ref_type,REF_TYPE
+ref_domain,REF_DOMAIN
+post_prop5,page_base_url_hit
+channel,CHANNEL
