@@ -244,14 +244,20 @@ def derive_bindings(ds, ds_cfg, referenced_locals=None, join_operands=None, repo
                 'local_type': ltype,
                 'is_calc': False,
                 'is_join_key': (parent, remote) in join_operands,
+                'parent': parent,
             })
 
-    # resolve physical-name collisions among base bindings (order preserved)
+    # resolve physical-name collisions among base bindings (order preserved). In
+    # collection (relationship-model) mode every relation becomes its own view, so a
+    # physical name is only a collision when it repeats WITHIN one relation.
+    per_relation = bool(ds_cfg.get('relation_views'))
     by_phys = defaultdict(list)
     for b in base:
-        by_phys[b['remote_name']].append(b)
+        key = (b['parent'], b['remote_name']) if per_relation else b['remote_name']
+        by_phys[key].append(b)
     dropped = set()
-    for phys, members in by_phys.items():
+    for key, members in by_phys.items():
+        phys = key[1] if per_relation else key
         if len(members) < 2:
             continue
         referenced = [m for m in members if m['local_name'] in referenced_locals]
@@ -451,16 +457,50 @@ def _collapse_join_to_table(parent, conn_name, name, sf_table):
 # ---- core transform ----------------------------------------------------------
 def transform_datasource(ds, ds_cfg, conn_cfg, templates, report, root):
     fed_name = ds.get('name')
-    view = ds_cfg['view']
     casing = ds_cfg.get('casing', 'upper')
-    sf_table = f"[{conn_cfg['dbname']}].[{conn_cfg['schema']}].[{view}]"
     conn = ds.find('connection')
+
+    # relationship-model (object-graph) datasource: the connection holds a
+    # type="collection" of several Custom SQL relations that Tableau links with
+    # <relationship>s (NOT joins). Relationships are context-dependent joins that
+    # never fan out measures, so flattening them into one view would change the
+    # numbers. Instead each relation gets ITS OWN gold view ("relation_views":
+    # {relation name -> VIEW}) and the relationship graph is left untouched.
+    relation_views = ds_cfg.get('relation_views') or {}
+    if relation_views:
+        view = ds_cfg.get('view') or ' + '.join(relation_views[k] for k in relation_views)
+    else:
+        view = ds_cfg['view']
+
+    def fqn(v):
+        return f"[{conn_cfg['dbname']}].[{conn_cfg['schema']}].[{v}]"
+    sf_table = fqn(view) if not relation_views else None
 
     # join keys inform both the "intentional duplication" warning and the collision
     # tie-break (prefer keeping the join-key column). Read them BEFORE the collapse
     # mutates the relation tree.
     top_rel = conn.find('relation')
     is_join = top_rel is not None and top_rel.get('type') in ('join', 'union')
+    is_collection = top_rel is not None and top_rel.get('type') == 'collection'
+    if is_collection and not relation_views:
+        names = [r.get('name') for r in top_rel.findall('relation')]
+        raise RuntimeError(
+            f"{fed_name}: relationship-model datasource (type=\"collection\" with "
+            f"{len(names)} relations: {names}). Each relation needs its own gold view -- "
+            f"add a per-datasource \"relation_views\" map {{relation name: VIEW}} to the "
+            f"config instead of a single \"view\".")
+    if relation_views and not is_collection:
+        raise RuntimeError(f"{fed_name}: \"relation_views\" given but the datasource is not "
+                           f"a type=\"collection\" relationship model.")
+    if is_collection:
+        text_names = {r.get('name') for r in top_rel.findall('relation')
+                      if r.get('type') == 'text'}
+        missing = text_names - set(relation_views)
+        extra = set(relation_views) - text_names
+        if missing or extra:
+            raise RuntimeError(
+                f"{fed_name}: relation_views must cover every Custom SQL relation exactly. "
+                f"missing={sorted(missing)} unknown={sorted(extra)}")
     join_ops = join_key_operands(top_rel) if is_join else set()
     join_keys = sorted({apply_casing(f, casing) for _r, f in join_ops})
 
@@ -505,8 +545,26 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report, root):
     if old_conn_name is None:
         raise RuntimeError(f'{fed_name}: no source SQL named-connection found')
 
-    # (2) point the datasource at the single gold view.
-    if is_join:
+    # (2) point the datasource at the gold view(s).
+    if is_collection:
+        # relationship model: repoint EACH Custom SQL relation at its own view, keeping
+        # the relation name (the object-graph, <cols> map and metadata-record
+        # parent-names all key on it). Both the connection block and the object-graph
+        # live ("") model carry a copy of each relation.
+        relation_name = ', '.join(sorted(relation_views))
+        relations_converted = 0
+        for el in ds.iter():
+            if el.get('connection') == old_conn_name:
+                el.set('connection', new_conn_name)
+            if el.tag == 'relation' and el.get('type') == 'text' \
+                    and el.get('name') in relation_views:
+                el.set('type', 'table')
+                el.set('table', fqn(relation_views[el.get('name')]))
+                el.text = None
+                for sub in list(el):
+                    el.remove(sub)
+                relations_converted += 1
+    elif is_join:
         # collapse the join subtree -> one table relation, in the connection block
         # and the object-graph's live ("") model. The extract-context object-graph
         # relation is left for step (5) to strip.
@@ -548,7 +606,8 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report, root):
                 relations_converted += 1
     parent_name = f'[{relation_name}]'
 
-    # (3) rebuild connection-level metadata-records
+    # (3) rebuild connection-level metadata-records. In collection mode each record
+    # keeps its own relation as parent (it still exists, now a table relation).
     mrs = conn.find('metadata-records')
     if mrs is None:
         mrs = ET.SubElement(conn, 'metadata-records')
@@ -557,8 +616,9 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report, root):
     for r in list(mrs):
         mrs.remove(r)
     for i, b in enumerate(bindings, start=1):
+        parent = f"[{b['parent']}]" if is_collection and b.get('parent') else parent_name
         mrs.append(make_record(templates, i, b['remote_name'], b['local_name'],
-                               b['local_type'], parent_name))
+                               b['local_type'], parent))
 
     # (3b) a federated (joined) datasource carries a <connection>/<cols> map whose
     # values are relation-qualified physical columns ([Rel].[col]) pointing at the
@@ -576,7 +636,10 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report, root):
         for b in sorted(bindings, key=lambda x: x['local_name']):
             m = ET.SubElement(cols, 'map')
             m.set('key', b['local_name'])
-            m.set('value', f'[{view}].[{b["remote_name"]}]')
+            # collection mode keeps the relation names, so the map stays
+            # relation-qualified; only the physical column casing changes.
+            rel = b['parent'] if is_collection and b.get('parent') else view
+            m.set('value', f'[{rel}].[{b["remote_name"]}]')
             cols_rewritten += 1
 
     # (4) neutralize materialized calcs at datasource level
@@ -627,6 +690,8 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report, root):
         'extract_props_removed': extract_props_removed,
         'calc_ids': calc_ids,
         'is_join': is_join,
+        'is_collection': is_collection,
+        'relation_views': dict(relation_views),
         'cols_rewritten': cols_rewritten,
         'join_keys': join_keys,
         'collisions_dropped': ds_report.get('collisions_dropped', []),
@@ -727,11 +792,19 @@ def _print_report(report, dropped, out_twbx):
     for r in report:
         print(f"\n[{r['caption']}]  ({r['datasource']})")
         print(f"  connection : {r['old_class']} -> snowflake  ({r['old_conn']} -> {r['new_conn']})")
-        print(f"  relation   : text SQL -> table {r['sf_table']}  (name kept: {r['relation_name']}, {r['relations_converted']} relation(s))")
+        if r.get('is_collection'):
+            print(f"  relation   : {r['relations_converted']} text SQL relation(s) -> one table relation per view (names kept: {r['relation_name']})")
+        else:
+            print(f"  relation   : text SQL -> table {r['sf_table']}  (name kept: {r['relation_name']}, {r['relations_converted']} relation(s))")
         print(f"  casing     : {r['casing']}")
         print(f"  metadata   : {r['metadata_records_before']} -> {r['metadata_records_after']} ({r['base_records']} base + {r['calc_records']} calc)")
         if r.get('is_join'):
             print(f"  cols map   : {r['cols_rewritten']} entry(ies) repointed to [{r['view']}]")
+        if r.get('is_collection'):
+            print(f"  relationship model: {len(r['relation_views'])} relation(s), one view each "
+                  f"(relationships preserved); {r['cols_rewritten']} cols-map entry(ies) recased")
+            for k, v in r['relation_views'].items():
+                print(f"      [{k}] -> {v}")
         for c in r.get('collisions_dropped', []):
             print(f"  collision  : dropped {c['dropped_local']} (unreferenced) -> "
                   f"kept {c['kept_local']} for physical [{c['physical']}]")
@@ -755,7 +828,10 @@ def write_notes(result, notes_path, drill_label=None):
         lines.append(f'### {r["caption"]}\n')
         lines.append(f'- Datasource (unchanged identity): `{r["datasource"]}`')
         lines.append(f'- Connection: `{r["old_class"]}` -> `snowflake`')
-        lines.append(f'- Relation: text custom-SQL -> table `{r["sf_table"]}` (relation name kept as `{r["relation_name"]}`)')
+        if r.get('is_collection'):
+            lines.append(f'- Relations: {r["relations_converted"]} text custom-SQL relations -> one table relation per view (names kept: `{r["relation_name"]}`)')
+        else:
+            lines.append(f'- Relation: text custom-SQL -> table `{r["sf_table"]}` (relation name kept as `{r["relation_name"]}`)')
         lines.append(f'- Base casing: `{r["casing"]}`')
         lines.append(f'- Metadata-records: {r["metadata_records_before"]} -> {r["metadata_records_after"]} ({r["base_records"]} base + {r["calc_records"]} calc)')
         lines.append(f'- Calc fields neutralized: {len(r["calcs_neutralized"])} datasource-level + {r.get("ws_calc_copies_stripped", 0)} worksheet copies')
@@ -764,6 +840,12 @@ def write_notes(result, notes_path, drill_label=None):
         if r.get('is_join'):
             lines.append(f'- Joined datasource collapsed into one view; `{r["cols_rewritten"]}` '
                          f'`<cols>` map entries repointed to `[{r["view"]}]`.')
+        if r.get('is_collection'):
+            lines.append('- Relationship-model datasource (Tableau relationships, not joins): '
+                         'each logical object kept its own relation and got its own view; '
+                         'the relationship graph is unchanged.')
+            for k, v in r['relation_views'].items():
+                lines.append(f'    - relation `{k}` -> `{v}`')
         for c in r.get('collisions_dropped', []):
             lines.append(f'- Physical-name collision on `{c["physical"]}`: dropped '
                          f'unreferenced field `{c["dropped_local"]}`, kept '

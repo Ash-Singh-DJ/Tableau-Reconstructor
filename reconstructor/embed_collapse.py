@@ -94,6 +94,14 @@ EXTRACT_PREFIX = 'Data/Extracts/'   # local extract shadow files (may lack .hype
 PHYSICAL_ONLY_CALC_ATTRS = ('pivot', 'user-datatype', 'default-type', 'layered',
                             'visual-totals', 'aggregation')
 
+# Same idea for <group> elements (computed SETS and dashboard-action groups): a
+# published proxy stamps them `layered="true"` (+ `auto-hidden`), the canonical embedded
+# .tds does not. Once the calc columns are de-layered, a layered group over a
+# non-layered field is invalid and Tableau silently DROPS every group on load (seen:
+# CCO Council -- all 7 sets + 23 action groups vanished, breaking the calcs that used
+# `IN [Set]`). Strip to the canonical shape.
+PROXY_ONLY_GROUP_ATTRS = ('layered', 'auto-hidden')
+
 # Worksheet field references that are NOT database columns and so never appear in a
 # connection's metadata-records. They must be excluded from the "referenced base
 # column" set, or the pairing guardrail reports them as missing from the gold view
@@ -186,12 +194,15 @@ def _swap_tdsx(tdsx_path, conn_cfg, ds_cfg, workdir):
 
     sub = {
         'match': ds_cfg.get('tdsx_match', formatted),
-        'view': ds_cfg['view'],
+        'view': ds_cfg.get('view'),
         'casing': ds_cfg.get('casing', 'upper'),
         'calc_bindings': ds_cfg.get('calc_bindings', []),
     }
     if 'column_overrides' in ds_cfg:
         sub['column_overrides'] = ds_cfg['column_overrides']
+    if 'relation_views' in ds_cfg:
+        # relationship-model side-car: one view per logical object (see reconstruct)
+        sub['relation_views'] = ds_cfg['relation_views']
     sub_config = {'connection': conn_cfg, 'datasources': [sub]}
 
     out_tdsx = os.path.join(workdir, os.path.basename(tdsx_path))
@@ -237,6 +248,21 @@ def _verify_pairing(proxy, swapped_tds, root, match_label):
 
 
 # ---- calc-column shape normalization -----------------------------------------
+def _normalize_groups(scope):
+    """Strip proxy-only attributes from every <group> (set / action group) under
+    `scope` so they match the canonical embedded shape. Returns the count touched."""
+    n = 0
+    for g in scope.findall('group'):
+        touched = False
+        for attr in PROXY_ONLY_GROUP_ATTRS:
+            if attr in g.attrib:
+                del g.attrib[attr]
+                touched = True
+        if touched:
+            n += 1
+    return n
+
+
 def _normalize_calc_columns(scope):
     """Strip physical-only attributes from every calc <column> under `scope` (a
     datasource element, or a worksheet's <datasource-dependencies>) so the calc
@@ -289,12 +315,18 @@ def _graft(proxy, swapped_tds):
     #     render as Calculated Fields (their formulas + logical layer are untouched).
     calcs_normalized = _normalize_calc_columns(proxy)
 
+    # (5) normalize groups (sets + action groups) for the same reason -- see
+    #     PROXY_ONLY_GROUP_ATTRS.
+    groups_normalized = _normalize_groups(proxy)
+
     return {
         'repository_location_stripped': rl is not None,
         'new_conn_class': proxy.find('connection').get('class'),
         'metadata_records': len(_conn_local_names(proxy)),
         'calcs_kept': len(_calc_col_names(proxy)),
         'calcs_normalized': calcs_normalized,
+        'groups_kept': len(proxy.findall('group')),
+        'groups_normalized': groups_normalized,
     }
 
 
@@ -309,6 +341,8 @@ def collapse(twbx_path, config, output_path, verbose=True):
     all_ds = datasource_elements(root)
 
     report = []
+    dropped_ds = _drop_datasources(root, all_ds, config.get('drop_datasources') or [])
+    all_ds = datasource_elements(root)
     with tempfile.TemporaryDirectory() as workdir:
         for ds_cfg in ds_configs:
             match = ds_cfg.get('match') or ds_cfg.get('name')
@@ -338,18 +372,21 @@ def collapse(twbx_path, config, output_path, verbose=True):
             # sheet even though the datasource-level column is clean.
             fed_name = proxy.get('name')
             ws_norm = 0
+            ws_grp = 0
             for ws in root.findall('.//worksheet'):
                 for dd in ws.findall('.//datasource-dependencies'):
                     if dd.get('datasource') == fed_name:
                         ws_norm += _normalize_calc_columns(dd)
+                        ws_grp += _normalize_groups(dd)
             graft_rep['worksheet_calc_copies_normalized'] = ws_norm
+            graft_rep['worksheet_group_copies_normalized'] = ws_grp
 
             report.append({
                 'match': match,
                 'name': proxy.get('name'),
                 'caption': ds_label(proxy),
                 'tdsx': os.path.basename(tdsx),
-                'view': ds_cfg['view'],
+                'view': ds_cfg.get('view') or ' + '.join(ds_cfg['relation_views'].values()),
                 'fingerprint': fp,
                 'graft': graft_rep,
             })
@@ -368,17 +405,59 @@ def collapse(twbx_path, config, output_path, verbose=True):
             zout.writestr(item, new_twb if item == twb_name else zin.read(item))
 
     if verbose:
-        _print_report(report, dropped, output_path)
-    return {'report': report, 'dropped': dropped, 'output': output_path,
-            'connection': conn_cfg}
+        _print_report(report, dropped, output_path, dropped_ds)
+    return {'report': report, 'dropped': dropped, 'dropped_datasources': dropped_ds,
+            'output': output_path, 'connection': conn_cfg}
 
 
-def _print_report(report, dropped, out_path):
+def _drop_datasources(root, all_ds, matches):
+    """Remove whole <datasource> elements named in config "drop_datasources" (matched
+    like any other datasource: caption / name / repository id). Meant for dead
+    published references -- e.g. an empty sqlproxy stub with no fields that would
+    otherwise survive as an Athena-named leftover. Refuses if ANY worksheet still
+    references the datasource, or if any reference to its federated name remains
+    anywhere else in the workbook after removal. Returns the dropped labels."""
+    dropped = []
+    for match in matches:
+        hits = [d for d in all_ds if ds_matches(d, match)]
+        if not hits:
+            raise RuntimeError(f"drop_datasources: datasource not found in workbook: {match!r}")
+        if len(hits) > 1:
+            raise RuntimeError(f"drop_datasources: ambiguous (matched {len(hits)}): {match!r}")
+        ds = hits[0]
+        fed = ds.get('name')
+        users = set()
+        for ws in root.findall('.//worksheet'):
+            for dd in ws.findall('.//datasource-dependencies'):
+                if dd.get('datasource') == fed:
+                    users.add(ws.get('name'))
+            for el in ws.iter('datasource'):
+                if el.get('name') == fed:
+                    users.add(ws.get('name'))
+        if users:
+            raise RuntimeError(f"drop_datasources: {match!r} is still used by worksheet(s) "
+                               f"{sorted(users)}; refusing to drop it.")
+        parent = root.find('datasources')
+        if parent is None or ds not in list(parent):
+            raise RuntimeError(f"drop_datasources: cannot locate parent of {match!r}")
+        parent.remove(ds)
+        raw_after = ET.tostring(root, encoding='unicode')
+        left = raw_after.count(f"'{fed}'") + raw_after.count(f'"{fed}"')
+        if left:
+            raise RuntimeError(f"drop_datasources: {left} reference(s) to {fed!r} remain outside "
+                               f"the datasource element; refusing.")
+        dropped.append({'match': match, 'name': fed, 'caption': ds_label(ds)})
+    return dropped
+
+
+def _print_report(report, dropped, out_path, dropped_ds=None):
     print(f'\nWrote: {out_path}')
     if dropped:
         print(f'Dropped {len(dropped)} orphaned extract file(s):')
         for d in dropped:
             print('  -', d)
+    for d in dropped_ds or []:
+        print(f"Dropped unused datasource: {d['caption']!r} ({d['name']}) -- no worksheet referenced it")
     print('\n=== EMBED-COLLAPSE REPORT ===')
     for r in report:
         fp, g = r['fingerprint'], r['graft']
@@ -395,6 +474,9 @@ def _print_report(report, dropped, out_path):
         print(f"               {g['calcs_normalized']} calc columns shape-normalized "
               f"(+ {g['worksheet_calc_copies_normalized']} worksheet copies) -> "
               f"render as Calculated Fields")
+        print(f"               {g['groups_kept']} groups (sets/actions) kept, "
+              f"{g['groups_normalized']} shape-normalized "
+              f"(+ {g.get('worksheet_group_copies_normalized', 0)} worksheet copies)")
 
 
 # ---- static verification -----------------------------------------------------
@@ -437,6 +519,12 @@ def verify_collapse(output_twbx, config, verbose=True):
         print(f"'athena' substring      : {n_athena}  -> {'OK' if n_athena == 0 else 'FAIL'}")
 
     all_ds = datasource_elements(root)
+    for match in config.get('drop_datasources') or []:
+        still = [d for d in all_ds if ds_matches(d, match)]
+        ok = ok and not still
+        if verbose:
+            print(f"dropped datasource {match!r}: {'still present' if still else 'absent'}  "
+                  f"-> {'FAIL' if still else 'OK'}")
     for ds_cfg in config['datasources']:
         match = ds_cfg.get('match') or ds_cfg.get('name')
         hits = [d for d in all_ds if ds_matches(d, match)]
@@ -445,8 +533,13 @@ def verify_collapse(output_twbx, config, verbose=True):
             ok = False
             continue
         ds = hits[0]
-        view = ds_cfg['view']
-        sf_table = f'[{db}].[{schema}].[{view}]'
+        relation_views = ds_cfg.get('relation_views') or {}
+        if relation_views:
+            view = ' + '.join(relation_views.values())
+            sf_tables = {f'[{db}].[{schema}].[{v}]' for v in relation_views.values()}
+        else:
+            view = ds_cfg['view']
+            sf_tables = {f'[{db}].[{schema}].[{view}]'}
         conn = ds.find('connection')
 
         cls = conn.get('class') if conn is not None else None
@@ -456,7 +549,11 @@ def verify_collapse(output_twbx, config, verbose=True):
         has_repo = ds.find('repository-location') is not None
         rels = [(r.get('type'), r.get('table')) for r in ds.iter('relation')]
         text_rels = [r for r in rels if r[0] == 'text']
-        view_rels = [r for r in rels if r[1] == sf_table]
+        view_rels = [r for r in rels if r[1] in sf_tables]
+        # relationship model: every configured view must be reached by a relation
+        # (connection block + object-graph mirror each carry one per view)
+        views_hit = {r[1] for r in view_rels}
+        all_views_ok = views_hit == sf_tables
         stub = any(r.get('table') == '[sqlproxy]' for r in ds.iter('relation'))
 
         universe = _conn_local_names(ds) | _calc_col_names(ds)
@@ -479,9 +576,13 @@ def verify_collapse(output_twbx, config, verbose=True):
                             and any(a in c.attrib for a in PHYSICAL_ONLY_CALC_ATTRS)):
                         dirty_calcs.append(c.get('name'))
         calc_shape_ok = not dirty_calcs
+        dirty_groups = [g.get('name') for g in ds.findall('group')
+                        if any(a in g.attrib for a in PROXY_ONLY_GROUP_ATTRS)]
+        group_shape_ok = not dirty_groups
 
         ds_ok = (cls == 'federated' and inner_ok and not has_repo and not text_rels
-                 and bool(view_rels) and not stub and not unresolved and calc_shape_ok)
+                 and bool(view_rels) and all_views_ok and not stub and not unresolved
+                 and calc_shape_ok and group_shape_ok)
         ok = ok and ds_ok
         if verbose:
             print(f"\n[{ds_label(ds)}]  ({ds.get('name')})")
@@ -492,7 +593,10 @@ def verify_collapse(output_twbx, config, verbose=True):
             print(f"  [sqlproxy] stub relation: {'present' if stub else 'none'}  "
                   f"-> {'FAIL' if stub else 'OK'}")
             print(f"  text relations left   : {len(text_rels)}  -> {'OK' if not text_rels else 'FAIL'}")
-            print(f"  relations -> {view}: {len(view_rels)}  -> {'OK' if view_rels else 'FAIL'}")
+            print(f"  relations -> {view}: {len(view_rels)}  -> {'OK' if view_rels and all_views_ok else 'FAIL'}")
+            if relation_views and not all_views_ok:
+                for missing in sorted(sf_tables - views_hit):
+                    print(f"      !! no relation points at {missing}")
             print(f"  field resolution      : {len(referenced)} referenced, "
                   f"{len(unresolved)} unresolved  -> {'OK' if not unresolved else 'FAIL'}")
             for u in sorted(unresolved):
@@ -501,6 +605,10 @@ def verify_collapse(output_twbx, config, verbose=True):
                   f"-> {'OK' if calc_shape_ok else 'FAIL'}")
             for d in sorted(set(dirty_calcs)):
                 print(f"      !! {d} still carries physical/pivot attributes")
+            print(f"  group (set) shape     : {len(ds.findall('group'))} groups, "
+                  f"{len(dirty_groups)} with proxy-only attrs  -> {'OK' if group_shape_ok else 'FAIL'}")
+            for d in sorted(dirty_groups):
+                print(f"      !! {d} still carries layered/auto-hidden")
 
     if verbose:
         print(f"\n=== {'ALL STATIC CHECKS PASS' if ok else 'SOME CHECKS FAILED'} ===")
