@@ -15,9 +15,10 @@ WHAT THIS DOES. Given the .twbx and the side-car .tdsx for each sqlproxy datasou
   1. Source-swap each .tdsx to Snowflake with the EXISTING engine (reconstruct.py) --
      no dialect logic is duplicated here; this module never touches a database.
   2. Match each workbook sqlproxy datasource to its swapped .tds (by the caller's
-     explicit mapping) and VERIFY the pairing with a field fingerprint: the calc-id
-     sets must match and every base column the workbook references must exist in the
-     .tds. A mismatch is a hard stop (a wrong pairing cannot silently pass).
+     explicit mapping) and VERIFY the pairing with a field fingerprint: every .tds
+     calc must exist in the workbook (workbook-local extras are allowed) and every
+     base column the workbook references must exist in the .tds. A mismatch is a hard
+     stop (a wrong pairing cannot silently pass).
   3. GRAFT the swapped .tds's physical layer onto the proxy datasource in place:
      strip <repository-location>, replace <connection> and <object-graph> with the
      Snowflake ones, and KEEP EVERYTHING ELSE -- crucially the federated `name`
@@ -69,6 +70,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -200,6 +202,8 @@ def _swap_tdsx(tdsx_path, conn_cfg, ds_cfg, workdir):
     }
     if 'column_overrides' in ds_cfg:
         sub['column_overrides'] = ds_cfg['column_overrides']
+    if 'extra_columns' in ds_cfg:
+        sub['extra_columns'] = ds_cfg['extra_columns']
     if 'relation_views' in ds_cfg:
         # relationship-model side-car: one view per logical object (see reconstruct)
         sub['relation_views'] = ds_cfg['relation_views']
@@ -215,19 +219,23 @@ def _swap_tdsx(tdsx_path, conn_cfg, ds_cfg, workdir):
 def _verify_pairing(proxy, swapped_tds, root, match_label):
     """Guardrail against a wrong proxy<->tds pairing. Returns a report dict; raises
     on a hard mismatch. Checks:
-      - calc-id sets are equal (worksheets bind calcs by these ids), and
+      - every calc in the side-car exists in the workbook proxy (tds_calcs is a subset
+        of proxy_calcs). Workbook-local calcs exist only in the proxy and are fine --
+        the graft keeps the proxy's logical layer; a calc only in the .tdsx is the
+        real wrong-pairing signal, and
       - every base column the workbook references exists in the swapped tds's
-        connection metadata-records (the tds must be a superset of what's used)."""
+        connection metadata-records (the tds must be a superset of what's used).
+    Also returns non-fatal `warnings` for base columns that kept workbook-local calc
+    formulas reference but the gold view lacks."""
     proxy_calcs = _calc_col_names(proxy)
     tds_calcs = _calc_col_names(swapped_tds)
-    if proxy_calcs != tds_calcs:
-        only_p = sorted(proxy_calcs - tds_calcs)
-        only_t = sorted(tds_calcs - proxy_calcs)
+    only_t = tds_calcs - proxy_calcs
+    if only_t:
         raise RuntimeError(
             f"{match_label!r}: calc-field fingerprint mismatch -- this .tdsx is not "
             f"the published source for this datasource.\n"
-            f"  only in workbook proxy: {only_p}\n"
-            f"  only in .tdsx        : {only_t}")
+            f"  only in .tdsx        : {sorted(only_t)}")
+    local_calcs = proxy_calcs - tds_calcs
 
     referenced = _referenced_locals(root, proxy.get('name'))
     referenced_base = referenced - proxy_calcs
@@ -239,11 +247,41 @@ def _verify_pairing(proxy, swapped_tds, root, match_label):
             f"absent from the .tdsx / gold view -- the view would not satisfy the "
             f"workbook: {sorted(missing)}")
 
+    warnings = []
+    if local_calcs:
+        known = set(tds_locals)
+        base_by_token = {}
+        for c in proxy.findall('column'):
+            if c.get('name'):
+                known.add(c.get('name'))
+            if c.get('caption'):
+                known.add(f"[{c.get('caption')}]")
+            if c.find('calculation') is None and c.get('name'):
+                base_by_token[c.get('name')] = c.get('name')
+                if c.get('caption'):
+                    base_by_token[f"[{c.get('caption')}]"] = c.get('name')
+        for c in proxy.findall('column'):
+            if c.get('name') not in local_calcs:
+                continue
+            formula = c.find('calculation').get('formula') or ''
+            # qualified refs ([Parameters].[P1]) live in another datasource
+            formula = re.sub(r'\[[^\]]+\]\.\[[^\]]+\]', '', formula)
+            label = c.get('caption') or c.get('name')
+            for tok in re.findall(r'\[[^\]]+\]', formula):
+                base = base_by_token.get(tok)
+                if base and base not in tds_locals:
+                    warnings.append(f"workbook-local calc {label!r} references {base}, "
+                                    f"which is absent from the gold view")
+                elif tok not in known:
+                    warnings.append(f"workbook-local calc {label!r} references {tok}, "
+                                    f"which resolves to no column or calc")
     return {
-        'calc_ids_matched': len(proxy_calcs),
+        'calc_ids_matched': len(tds_calcs),
+        'workbook_local_calcs': len(local_calcs),
         'referenced_base': len(referenced_base),
         'tds_base_columns': len(tds_locals),
         'unreferenced_base_in_view': len(tds_locals - referenced_base),
+        'warnings': sorted(set(warnings)),
     }
 
 
@@ -463,10 +501,13 @@ def _print_report(report, dropped, out_path, dropped_ds=None):
         fp, g = r['fingerprint'], r['graft']
         print(f"\n[{r['caption']}]  ({r['name']})")
         print(f"  side-car   : {r['tdsx']}  ->  view {r['view']}")
-        print(f"  fingerprint: {fp['calc_ids_matched']} calc ids matched; "
+        print(f"  fingerprint: {fp['calc_ids_matched']} calc ids matched "
+              f"(+{fp['workbook_local_calcs']} workbook-local); "
               f"{fp['referenced_base']} referenced base cols all present "
               f"({fp['tds_base_columns']} in view, "
               f"{fp['unreferenced_base_in_view']} extra)")
+        for w in fp['warnings']:
+            print(f"  WARNING    : {w}")
         print(f"  graft      : connection sqlproxy -> {g['new_conn_class']}/snowflake; "
               f"repository-location stripped: {g['repository_location_stripped']}")
         print(f"               {g['metadata_records']} metadata-records, "

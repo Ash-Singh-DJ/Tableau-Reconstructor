@@ -284,6 +284,18 @@ def derive_bindings(ds, ds_cfg, referenced_locals=None, join_operands=None, repo
 
     bindings = [b for b in base if id(b) not in dropped]
 
+    # fields the workbook references that the source lacks as a column but the gold view
+    # synthesizes (e.g. a constant replacing a dropped predicate column)
+    for entry in ds_cfg.get('extra_columns', []):
+        bindings.append({
+            'remote_name': entry[0],
+            'local_name': entry[1],
+            'local_type': entry[2] if len(entry) > 2 else 'string',
+            'is_calc': False,
+            'is_join_key': False,
+            'parent': '',
+        })
+
     for entry in ds_cfg.get('calc_bindings', []):
         gold_col, calc_id = entry[0], entry[1]
         ltype = entry[2] if len(entry) > 2 else 'string'
@@ -516,7 +528,14 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report, root):
     # extract, ...) cannot be folded into it. The standard engine refuses rather than
     # silently dropping those columns.
     if is_join:
-        non_sql = [l for l in _relation_leaves(top_rel) if l.get('type') != 'text']
+        # a plain table leaf on the same SQL connection is just another source table the
+        # flattened view already reads; only leaves on a non-SQL connection are refused.
+        sql_conns = {nc.get('name') for nc in conn.iter('named-connection')
+                     if nc.find('connection') is not None
+                     and nc.find('connection').get('class') in SQL_CONNECTION_CLASSES}
+        non_sql = [l for l in _relation_leaves(top_rel)
+                   if l.get('type') != 'text'
+                   and not (l.get('type') == 'table' and l.get('connection') in sql_conns)]
         if non_sql:
             names = ', '.join(repr(l.get('name')) for l in non_sql)
             raise RuntimeError(
@@ -543,7 +562,16 @@ def transform_datasource(ds, ds_cfg, conn_cfg, templates, report, root):
             make_snowflake_named_connection(nc, new_conn_name, conn_cfg)
             break
     if old_conn_name is None:
-        raise RuntimeError(f'{fed_name}: no source SQL named-connection found')
+        # Snowflake-native source (its Custom SQL already ran on Snowflake): re-point the
+        # lone snowflake named-connection at the target db/schema/warehouse, keeping its name.
+        sf_ncs = [nc for nc in conn.iter('named-connection')
+                  if nc.find('connection') is not None
+                  and nc.find('connection').get('class') == 'snowflake']
+        if len(sf_ncs) != 1:
+            raise RuntimeError(f'{fed_name}: no source SQL named-connection found')
+        old_conn_name = new_conn_name = sf_ncs[0].get('name')
+        old_class = 'snowflake'
+        make_snowflake_named_connection(sf_ncs[0], new_conn_name, conn_cfg)
 
     # (2) point the datasource at the gold view(s).
     if is_collection:
