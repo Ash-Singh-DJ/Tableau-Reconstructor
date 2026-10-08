@@ -165,7 +165,7 @@ touch a database). The first Snowflake query of a session opens a browser to sig
 
 ```
 Tableau-Reconstructor/
-├── connectors/         # Athena + Snowflake query helpers (the DB-dependent code)
+├── connectors/         # Athena + Snowflake query helpers + Tableau Cloud REST puller
 ├── reconstructor/      # the swap engines + extraction/verification tools
 ├── .claude/skills/     # the three skills: tableau-source-swap, production-swap, logic_test
 ├── table_mappings.csv  # approved Athena ↔ Snowflake table mappings (shared)

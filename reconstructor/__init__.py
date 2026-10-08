@@ -9,6 +9,8 @@ Plus extraction helpers used to inspect a workbook/data source before swapping:
   - extract_custom_sql_advanced.py base + translatable calc fields as CTE columns
   - extract_field_metadata.py      captions / calc formulas / SQL-column maps -> CSVs
   - verify_output.py               static, config-driven verification of a swap output
+  - check_staging.py               pre-flight: are a workbook's published side-car
+                                   .tdsx files staged (and paired, and zipped)?
 
 All engines operate on either a workbook (.twbx, root <workbook>) or a standalone
 data source (.tdsx, root <datasource>); the format differences are centralized in

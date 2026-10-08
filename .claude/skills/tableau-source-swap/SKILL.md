@@ -264,20 +264,34 @@ in place, **keeping its federated `name`** (`sqlproxy.xxxxx`) so every worksheet
 binding and calc alias stays valid with zero worksheet rewrites. It strips the
 datasource's `<repository-location>` and drops the now-orphaned local extracts.
 
-**Step 5a — Inventory the published datasources.**
+**Step 5a — Stage the inputs, then inventory the published datasources.**
 
 ```bash
+# with a Tableau Cloud PAT in .env: pull workbook + every side-car in one go
+"$PY" -m connectors.tableau pull "<workbook name or content URL>" [--project "<project>"]
+# otherwise (hand-downloaded files): check what is staged
+"$PY" reconstructor/check_staging.py "Inputs/<workbook dir>"   # --zip wraps bare .twb/.tds
 "$PY" reconstructor/embed_collapse.py "Inputs/<workbook>.twbx" --inventory
 ```
 
-This lists each `sqlproxy` datasource with its `repository_id`, calc-field ids, and
-worksheet-referenced base columns — the fingerprint you use to match it to a `.tdsx`.
+`pull` writes to `Inputs/<workbook name>/`, names each side-car by its published
+name, and ends with the same `check_staging.py` report; a side-car the PAT user cannot
+download is listed as a failure to fetch by hand.
 
-**Step 5b — Match each `sqlproxy` datasource to its side-car `.tdsx`.** Filenames
-rarely match the datasource caption exactly but are usually fuzzy-similar; the
-`repository-location/@id` is often shared verbatim between the proxy and its `.tds`
-(strongest signal). Resolve the pairing by id/caption similarity and **get user
-sign-off** before proceeding. You don't have to get it perfect — the engine
+`check_staging.py` lists every published source the workbook references (published
+name, content URL, site, worksheet count), which staged `.tdsx` covers each, and what
+that side-car connects to; it flags MISSING downloads, duplicate or name-only
+pairings, unreferenced side-cars, and bare `.twb`/`.tds` files (exit 1 until all are
+resolved). Hand the user its MISSING list as the download checklist. `--inventory`
+then gives each `sqlproxy` datasource's calc-field ids and worksheet-referenced base
+columns — the fingerprint the engine verifies.
+
+**Step 5b — Match each `sqlproxy` datasource to its side-car `.tdsx`.** Start from
+`check_staging.py`'s pairing: a `[ok]` match means the side-car's
+`repository-location/@id` equals the proxy's content URL (authoritative, survives
+renamed files and differing captions). A `[check]` is a name-only candidate (the
+side-car has no repository-location) or a duplicate. **Get user sign-off** on the
+pairing before proceeding. You don't have to get it perfect — the engine
 *verifies* every pairing with a field fingerprint (calc-id sets must match exactly;
 every referenced base column must exist in the `.tdsx`) and **hard-stops** on a
 mismatch, so a wrong guess fails loudly rather than silently.
@@ -361,6 +375,8 @@ pending the user.
 
 - `reconstructor/reconstruct.py` — the engine this skill drives (config-driven).
 - `reconstructor/verify_output.py` — static verifier (config-driven; pass `--input`).
+- `reconstructor/check_staging.py` — Phase 5 pre-flight: side-car download checklist
+  + proposed proxy↔side-car pairing by content URL; `--zip`, `--json`.
 - `reconstructor/embed_collapse.py` — Phase 5 embed-collapse engine for published
   (`sqlproxy`) `.twbx` + side-car `.tdsx`; reuses `reconstruct.py`. Modes:
   `--inventory`, build (`--config -o`), and `--verify`.

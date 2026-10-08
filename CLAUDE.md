@@ -44,9 +44,11 @@ Three Claude **skills** drive the work end-to-end (see `.claude/skills/`):
 
 ```
 Tableau-Reconstructor/
-├── connectors/                 # standalone DB query helpers (the ONLY third-party-
+├── connectors/                 # standalone DB/API helpers (the ONLY third-party-
 │   ├── __init__.py             #   dependent code in the repo)
-│   └── db.py                   #   execute_athena_query / execute_snowflake_query
+│   ├── db.py                   #   execute_athena_query / execute_snowflake_query
+│   └── tableau.py              #   Tableau Cloud REST (PAT): `test` sign-in; `pull`
+│                               #     a workbook + its published side-car .tdsx -> Inputs/
 ├── reconstructor/              # the swap engines + extraction tools (pure stdlib)
 │   ├── reconstruct.py          #   Athena→Snowflake source swap (config-driven)
 │   ├── embed_collapse.py       #   collapse a published (sqlproxy) .twbx + side-car
@@ -56,6 +58,9 @@ Tableau-Reconstructor/
 │   ├── extract_custom_sql_advanced.py  # base + translatable calc fields as columns
 │   ├── extract_field_metadata.py       # captions / calc formulas / SQL-col maps → CSV
 │   ├── verify_output.py        #   static, config-driven verification of a swap
+│   ├── check_staging.py        #   pre-flight: which published side-car .tdsx a
+│   │                           #     workbook needs, which are staged, pairing by
+│   │                           #     content URL; --zip wraps bare .twb/.tds
 │   ├── tableau_doc.py          #   format-agnostic .twbx/.tdsx IO shared by all engines
 │   ├── deploy_view.py          #   deploy a gold view + smoke test (uses connectors)
 │   └── logic_test.py           #   Athena-vs-Snowflake logic comparison (uses connectors)
@@ -85,6 +90,12 @@ from connectors import execute_athena_query, execute_snowflake_query
 - **Python**: use any Python 3.9+ (`python`). Install deps: `pip install -r requirements.txt`.
 - **Credentials**: copy `.env.example` → `.env` and fill in your AWS + Snowflake
   values. `.env` is gitignored — **never commit or print it**.
+- **Tableau Cloud** (optional, `connectors/tableau.py`): a Personal Access Token in
+  `.env` (`TABLEAU_SERVER_URL`, `TABLEAU_SITE`, `TABLEAU_PAT_NAME`, `TABLEAU_PAT_SECRET`).
+  `python -m connectors.tableau pull "<workbook>"` stages the workbook and every
+  published side-car `.tdsx` it references into `Inputs/<workbook>/`, ending with the
+  `check_staging.py` report. Read-only — it never publishes. One active session per
+  PAT; the PAT user is a Creator, so admin-only endpoints return 403.
 - **Snowflake auth** is browser OAuth (Okta) by default and is **slow** — the first
   query opens a browser (1–2 min). Run deploy/verify queries in the background and
   batch them. Set `SNOWFLAKE_AUTHENTICATOR=externalbrowser` (default) or supply a

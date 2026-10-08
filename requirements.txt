@@ -8,5 +8,8 @@ pandas>=2.0.0
 pyathena>=3.0.0
 snowflake-connector-python>=3.0.0
 
+# Tableau Cloud REST API (connectors/tableau.py: pull workbooks + side-car .tdsx)
+tableauserverclient>=0.30
+
 # Credential loading from .env
 python-dotenv>=1.0.0
